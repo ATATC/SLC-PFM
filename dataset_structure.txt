@@ -1,0 +1,16 @@
+/project/rrg-jma/shared/SLC-PFM
+    chunk_8
+    chunk_9
+    chunk_10
+    ...
+    chunk_68
+        chunk68_id000_ea51f034.zip
+        chunk68_id001_bcd91261.zip
+        chunk68_id002_5fa77640.zip
+        ...
+        chunk68_id441_63347379.zip
+            1.webp
+            2.webp
+            3.webp
+            ...
+            494.webp
