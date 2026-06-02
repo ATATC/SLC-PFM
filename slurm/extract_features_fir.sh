@@ -34,7 +34,7 @@ mkdir -p "${OUTPUT_ROOT}" "${HF_HOME}"
 
 module load python/3.12
 module load arrow
-module load cuda/13.0
+module load cuda/13.2
 module load opencv
 module load openslide
 source /scratch/atatc/venv_automil/bin/activate
