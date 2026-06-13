@@ -3,7 +3,7 @@
 #SBATCH --account=rrg-jma
 #SBATCH --gpus-per-node=nvidia_h100_80gb_hbm3_3g.40gb:1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=8G
+#SBATCH --mem=16G
 #SBATCH --time=0:30:00
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
@@ -25,7 +25,7 @@ INPUT_ROOT="${INPUT_ROOT:-/project/rrg-jma/shared/SLC-PFM}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/project/rrg-jma/shared/SLC-PFM_features}"
 HF_HOME="${HF_HOME:-/project/rrg-jma/${USER}/hf_cache}"
 ENCODERS="${ENCODERS:-virchow2,hoptimus1,uni_v2}"
-BATCH_SIZE="${BATCH_SIZE:-64}"
+BATCH_SIZE="${BATCH_SIZE:-128}"
 LIMIT_ZIPS="${LIMIT_ZIPS:-}"
 LIMIT_TILES="${LIMIT_TILES:-}"
 
