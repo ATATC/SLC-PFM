@@ -28,8 +28,10 @@ ENCODERS="${ENCODERS:-virchow2,hoptimus1,uni_v2}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 LIMIT_ZIPS="${LIMIT_ZIPS:-}"
 LIMIT_TILES="${LIMIT_TILES:-}"
+LOG_EVERY_BATCHES="${LOG_EVERY_BATCHES:-4}"
 
 export HF_HOME
+export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
@@ -62,13 +64,14 @@ CHUNK_NAME="${CHUNK_NAME:-${CHUNKS[${TASK_ID}]}}"
 echo "Processing chunk: ${CHUNK_NAME}"
 
 cmd=(
-  python scripts/extract_zip_tile_features.py
+  python -u scripts/extract_zip_tile_features.py
   --input-root "${INPUT_ROOT}"
   --output-root "${OUTPUT_ROOT}"
   --encoders "${ENCODERS}"
   --chunks "${CHUNK_NAME}"
   --batch-size "${BATCH_SIZE}"
   --hf-cache-dir "${HF_HOME}"
+  --log-every-batches "${LOG_EVERY_BATCHES}"
 )
 
 if [[ -n "${LIMIT_ZIPS}" ]]; then
@@ -78,6 +81,10 @@ fi
 if [[ -n "${LIMIT_TILES}" ]]; then
   cmd+=(--limit-tiles "${LIMIT_TILES}")
 fi
+
+echo "Command:"
+printf '  %q' "${cmd[@]}"
+echo
 
 "${cmd[@]}"
 

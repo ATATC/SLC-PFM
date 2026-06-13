@@ -58,6 +58,10 @@ ENCODER_SPECS = {
 }
 
 
+def log(message: str) -> None:
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}", flush=True)
+
+
 def natural_key(value: str) -> list[int | str]:
     parts = re.split(r"(\d+)", value)
     return [int(part) if part.isdigit() else part.lower() for part in parts]
@@ -270,8 +274,10 @@ def save_payload(payload: dict[str, Any], output_path: Path) -> None:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    log(f"[save] writing {output_path}")
     torch.save(payload, tmp_path)
     tmp_path.replace(output_path)
+    log(f"[save] finished {output_path}")
 
 
 def extract_zip_features(
@@ -289,17 +295,21 @@ def extract_zip_features(
     include_token_maps: bool,
     overwrite: bool,
     fail_fast: bool,
+    log_every_batches: int,
 ) -> bool:
     import torch
 
     out_path = output_path_for(zip_path, input_root, output_root, spec.name)
     if out_path.exists() and not overwrite:
-        print(f"[skip] {spec.name}: {zip_path} -> {out_path}")
+        log(f"[skip] {spec.name}: {zip_path} -> {out_path}")
         return False
 
+    started_at = time.monotonic()
+    log(f"[zip-start] {spec.name}: {zip_path}")
     members = zip_image_members(zip_path)
     if limit_tiles is not None:
         members = members[:limit_tiles]
+    log(f"[zip-members] {spec.name}: {zip_path} has {len(members)} image tile(s)")
 
     tile_names: list[str] = []
     embeddings_out: list[Any] = []
@@ -308,11 +318,13 @@ def extract_zip_features(
     grid_size: tuple[int, int] | None = None
     pending_images: list[Any] = []
     pending_names: list[str] = []
+    batches_done = 0
 
     def flush_batch() -> None:
-        nonlocal grid_size
+        nonlocal batches_done, grid_size
         if not pending_images:
             return
+        batch_tile_count = len(pending_images)
         batch = torch.stack(pending_images, dim=0).to(device, non_blocking=True)
         embeddings, token_maps, batch_grid_size = run_batch(
             model=model,
@@ -327,6 +339,12 @@ def extract_zip_features(
             token_maps_out.append(convert_save_dtype(token_maps.detach().cpu(), save_dtype))
             grid_size = batch_grid_size
         tile_names.extend(pending_names)
+        batches_done += 1
+        if log_every_batches > 0 and batches_done % log_every_batches == 0:
+            log(
+                f"[batch] {spec.name}: {zip_path.name} "
+                f"batch={batches_done} tiles_done={len(tile_names)} last_batch={batch_tile_count}"
+            )
         pending_images.clear()
         pending_names.clear()
 
@@ -342,7 +360,7 @@ def extract_zip_features(
                 if fail_fast:
                     raise
                 errors.append({"tile": member, "error": repr(exc)})
-                print(f"[warn] failed tile {zip_path}!{member}: {exc}", file=sys.stderr)
+                print(f"[warn] failed tile {zip_path}!{member}: {exc}", file=sys.stderr, flush=True)
 
     flush_batch()
 
@@ -366,7 +384,8 @@ def extract_zip_features(
         payload["token_grid_size"] = grid_size
 
     save_payload(payload, out_path)
-    print(f"[done] {spec.name}: {zip_path} -> {out_path} ({len(tile_names)} tiles)")
+    elapsed = time.monotonic() - started_at
+    log(f"[done] {spec.name}: {zip_path} -> {out_path} ({len(tile_names)} tiles, {elapsed:.1f}s)")
     return True
 
 
@@ -415,12 +434,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also save patch-token feature maps when available. This can greatly increase output size.",
     )
     parser.add_argument("--hf-cache-dir", type=Path, help="Set HF_HOME before loading gated model weights.")
+    parser.add_argument(
+        "--log-every-batches",
+        type=non_negative_int,
+        default=4,
+        help="Print progress every N inference batches within a zip. Use 0 to disable batch progress.",
+    )
     parser.add_argument("--overwrite", action="store_true", help="Regenerate outputs that already exist.")
     parser.add_argument("--fail-fast", action="store_true", help="Stop on the first corrupt/unreadable tile.")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(line_buffering=True)
+
     args = build_parser().parse_args(argv)
 
     if args.hf_cache_dir:
@@ -439,13 +469,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     device = select_device(args.device)
-    print(f"Using device: {device}")
-    print(f"Found {len(zip_files)} zip file(s).")
+    log(f"Using device: {device}")
+    log(f"Input root: {input_root}")
+    log(f"Output root: {output_root}")
+    log(f"HF_HOME: {os.environ.get('HF_HOME', '<default>')}")
+    log(f"Found {len(zip_files)} zip file(s).")
 
     for encoder_name in args.encoders:
         spec = ENCODER_SPECS[encoder_name]
-        print(f"\nLoading encoder: {encoder_name} ({spec.hf_model})")
+        encoder_started_at = time.monotonic()
+        log(f"[encoder-load-start] {encoder_name} ({spec.hf_model})")
         model, transform = load_encoder(spec, device=device, tile_size=tile_size)
+        log(f"[encoder-load-done] {encoder_name} loaded in {time.monotonic() - encoder_started_at:.1f}s")
         for zip_path in zip_files:
             extract_zip_features(
                 zip_path=zip_path,
@@ -462,6 +497,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 include_token_maps=args.include_token_maps,
                 overwrite=args.overwrite,
                 fail_fast=args.fail_fast,
+                log_every_batches=args.log_every_batches,
             )
         del model
         try:
