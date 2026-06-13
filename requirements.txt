@@ -4,3 +4,4 @@ timm>=0.9.16
 huggingface_hub
 safetensors
 pillow
+erbium @ git+https://github.com/ProjectNeura/Erbium

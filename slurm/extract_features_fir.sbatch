@@ -29,6 +29,9 @@ BATCH_SIZE="${BATCH_SIZE:-64}"
 LIMIT_ZIPS="${LIMIT_ZIPS:-}"
 LIMIT_TILES="${LIMIT_TILES:-}"
 LOG_EVERY_BATCHES="${LOG_EVERY_BATCHES:-4}"
+ERBIUM_GPU_MONITOR="${ERBIUM_GPU_MONITOR:-1}"
+ERBIUM_GPU_MONITOR_SAMPLE_SECONDS="${ERBIUM_GPU_MONITOR_SAMPLE_SECONDS:-5}"
+ERBIUM_GPU_MONITOR_REPORT_SECONDS="${ERBIUM_GPU_MONITOR_REPORT_SECONDS:-60}"
 
 export HF_HOME
 export PYTHONUNBUFFERED=1
@@ -47,6 +50,16 @@ module load opencv
 module load openslide
 source /scratch/atatc/venv_automil/bin/activate
 
+monitor_pid=""
+cleanup() {
+  if [[ -n "${monitor_pid}" ]] && kill -0 "${monitor_pid}" 2>/dev/null; then
+    echo "Stopping Erbium GPU monitor pid=${monitor_pid}"
+    kill "${monitor_pid}" 2>/dev/null || true
+    wait "${monitor_pid}" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT TERM INT
+
 mapfile -t CHUNKS < <(find "${INPUT_ROOT}" -mindepth 1 -maxdepth 1 -type d -name 'chunk_*' -printf '%f\n' | sort -V)
 
 if [[ "${#CHUNKS[@]}" -eq 0 ]]; then
@@ -62,6 +75,16 @@ fi
 
 CHUNK_NAME="${CHUNK_NAME:-${CHUNKS[${TASK_ID}]}}"
 echo "Processing chunk: ${CHUNK_NAME}"
+
+if [[ "${ERBIUM_GPU_MONITOR}" != "0" ]]; then
+  monitor_label="${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID:-0}_${CHUNK_NAME}"
+  echo "Starting Erbium GPU monitor: label=${monitor_label}"
+  python -u scripts/erbium_gpu_monitor.py \
+    --label "${monitor_label}" \
+    --sample-interval-seconds "${ERBIUM_GPU_MONITOR_SAMPLE_SECONDS}" \
+    --report-interval-seconds "${ERBIUM_GPU_MONITOR_REPORT_SECONDS}" &
+  monitor_pid="$!"
+fi
 
 cmd=(
   python -u scripts/extract_zip_tile_features.py

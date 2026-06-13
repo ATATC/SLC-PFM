@@ -110,3 +110,28 @@ After each completed run, inspect usage and keep trimming requests:
 ```bash
 seff <jobid_or_array_task>
 ```
+
+The Slurm scripts also start an Erbium GPU monitor by default. It samples GPU stats every 5 seconds and prints the
+maximum GPU memory utilization seen in each 60-second window to the Slurm `.out` log:
+
+```text
+[erbium-gpu] ... max_memory_utilization=...
+```
+
+Install Erbium in the Fir environment before submitting:
+
+```bash
+pip install "erbium @ git+https://github.com/ProjectNeura/Erbium"
+```
+
+You can change or disable monitoring at submit time:
+
+```bash
+sbatch \
+  --export=ALL,ERBIUM_GPU_MONITOR_REPORT_SECONDS=60,ERBIUM_GPU_MONITOR_SAMPLE_SECONDS=5 \
+  slurm/extract_features_fir.sbatch
+
+sbatch \
+  --export=ALL,ERBIUM_GPU_MONITOR=0 \
+  slurm/extract_features_fir.sbatch
+```
