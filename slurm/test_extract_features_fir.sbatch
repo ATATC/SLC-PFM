@@ -24,14 +24,15 @@ CODE_DIR="${CODE_DIR:-${SLURM_SUBMIT_DIR}}"
 INPUT_ROOT="${INPUT_ROOT:-/project/rrg-jma/shared/SLC-PFM}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/project/rrg-jma/shared/SLC-PFM_features}"
 HF_HOME="${HF_HOME:-/project/rrg-jma/${USER}/hf_cache}"
-ENCODERS="${ENCODERS:-virchow2,hoptimus1,uni_v2}"
+ENCODERS="${ENCODERS:-virchow2}"
 BATCH_SIZE="${BATCH_SIZE:-256}"
 LIMIT_ZIPS="${LIMIT_ZIPS:-}"
 LIMIT_TILES="${LIMIT_TILES:-}"
 LOG_EVERY_BATCHES="${LOG_EVERY_BATCHES:-4}"
-ERBIUM_GPU_MONITOR="${ERBIUM_GPU_MONITOR:-1}"
-ERBIUM_GPU_MONITOR_SAMPLE_SECONDS="${ERBIUM_GPU_MONITOR_SAMPLE_SECONDS:-5}"
-ERBIUM_GPU_MONITOR_REPORT_SECONDS="${ERBIUM_GPU_MONITOR_REPORT_SECONDS:-60}"
+NVIDIA_SMI_GPU_MONITOR="${NVIDIA_SMI_GPU_MONITOR:-1}"
+NVIDIA_SMI_GPU_MONITOR_SAMPLE_SECONDS="${NVIDIA_SMI_GPU_MONITOR_SAMPLE_SECONDS:-5}"
+NVIDIA_SMI_GPU_MONITOR_REPORT_SECONDS="${NVIDIA_SMI_GPU_MONITOR_REPORT_SECONDS:-60}"
+NVIDIA_SMI_BIN="${NVIDIA_SMI_BIN:-nvidia-smi}"
 
 export HF_HOME
 export PYTHONUNBUFFERED=1
@@ -53,7 +54,7 @@ source /scratch/atatc/venv_slcpfm/bin/activate
 monitor_pid=""
 cleanup() {
   if [[ -n "${monitor_pid}" ]] && kill -0 "${monitor_pid}" 2>/dev/null; then
-    echo "Stopping Erbium GPU monitor pid=${monitor_pid}"
+    echo "Stopping nvidia-smi GPU monitor pid=${monitor_pid}"
     kill "${monitor_pid}" 2>/dev/null || true
     wait "${monitor_pid}" 2>/dev/null || true
   fi
@@ -76,13 +77,14 @@ fi
 CHUNK_NAME="${CHUNK_NAME:-${CHUNKS[${TASK_ID}]}}"
 echo "Processing chunk: ${CHUNK_NAME}"
 
-if [[ "${ERBIUM_GPU_MONITOR}" != "0" ]]; then
+if [[ "${NVIDIA_SMI_GPU_MONITOR}" != "0" ]]; then
   monitor_label="${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID:-0}_${CHUNK_NAME}"
-  echo "Starting Erbium GPU monitor: label=${monitor_label}"
-  python -u scripts/erbium_gpu_monitor.py \
+  echo "Starting nvidia-smi GPU monitor: label=${monitor_label}"
+  python -u scripts/nvidia_smi_gpu_monitor.py \
     --label "${monitor_label}" \
-    --sample-interval-seconds "${ERBIUM_GPU_MONITOR_SAMPLE_SECONDS}" \
-    --report-interval-seconds "${ERBIUM_GPU_MONITOR_REPORT_SECONDS}" &
+    --sample-interval-seconds "${NVIDIA_SMI_GPU_MONITOR_SAMPLE_SECONDS}" \
+    --report-interval-seconds "${NVIDIA_SMI_GPU_MONITOR_REPORT_SECONDS}" \
+    --nvidia-smi-bin "${NVIDIA_SMI_BIN}" &
   monitor_pid="$!"
 fi
 
