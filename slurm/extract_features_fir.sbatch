@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=slc-pfm-features
 #SBATCH --account=rrg-jma
-#SBATCH --gpus-per-node=h100:1
-#SBATCH --cpus-per-task=12
-#SBATCH --mem=124G
+#SBATCH --gpus-per-node=nvidia_h100_80gb_hbm3_3g.40gb:1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=8G
 #SBATCH --time=12:00:00
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
@@ -15,6 +15,8 @@ mkdir -p logs
 echo "Job ID: ${SLURM_JOB_ID}"
 echo "Array task: ${SLURM_ARRAY_TASK_ID:-none}"
 echo "Node: $(hostname)"
+echo "CPUs per task: ${SLURM_CPUS_PER_TASK:-unset}"
+echo "CUDA devices: ${CUDA_VISIBLE_DEVICES:-unset}"
 echo "Start: $(date)"
 echo "---"
 
@@ -28,6 +30,10 @@ LIMIT_ZIPS="${LIMIT_ZIPS:-}"
 LIMIT_TILES="${LIMIT_TILES:-}"
 
 export HF_HOME
+export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
+export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
+export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
+export NUMEXPR_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 
 cd "${CODE_DIR}"
 mkdir -p "${OUTPUT_ROOT}" "${HF_HOME}"

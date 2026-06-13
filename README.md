@@ -87,3 +87,26 @@ sbatch --array=0-0 slurm/extract_features_fir.sbatch
 ```
 
 The command above is a one-chunk smoke test. Once it succeeds, increase the array range to cover all chunk directories. The script discovers `chunk_*` folders under `INPUT_ROOT` and selects one by `SLURM_ARRAY_TASK_ID`.
+
+The default Fir request is intentionally modest:
+
+```text
+1x 40 GB H100 MIG slice, 4 CPUs, 32 GB RAM, 12 hours
+```
+
+If a run fails because a model does not fit, override only what is needed at submit time:
+
+```bash
+sbatch \
+  --gpus-per-node=h100:1 \
+  --mem=64G \
+  --cpus-per-task=4 \
+  --array=0-0 \
+  slurm/extract_features_fir.sbatch
+```
+
+After each completed run, inspect usage and keep trimming requests:
+
+```bash
+seff <jobid_or_array_task>
+```
