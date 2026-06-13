@@ -48,7 +48,7 @@ module load arrow
 module load cuda/13.2
 module load opencv
 module load openslide
-source /scratch/atatc/venv_automil/bin/activate
+source /scratch/atatc/venv_slcpfm/bin/activate
 
 monitor_pid=""
 cleanup() {
