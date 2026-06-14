@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=slc-pfm-features
 #SBATCH --account=rrg-jma
-#SBATCH --gpus-per-node=nvidia_h100_80gb_hbm3_3g.40gb:1
+#SBATCH --gpus-per-node=nvidia_h100_80gb_hbm3_2g.20gb:1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=16G
 #SBATCH --time=0:30:00
