@@ -53,9 +53,10 @@ LIMIT_ZIPS="${LIMIT_ZIPS:-}"
 STATS_MAX_FILES="${STATS_MAX_FILES:-}"
 INCLUDE_TOKEN_MAPS="${INCLUDE_TOKEN_MAPS:-0}"
 SPATIAL_LOSS_WEIGHT="${SPATIAL_LOSS_WEIGHT:-1.0}"
-NVIDIA_SMI_GPU_MONITOR="${NVIDIA_SMI_GPU_MONITOR:-1}"
-NVIDIA_SMI_GPU_MONITOR_SAMPLE_SECONDS="${NVIDIA_SMI_GPU_MONITOR_SAMPLE_SECONDS:-5}"
-NVIDIA_SMI_GPU_MONITOR_REPORT_SECONDS="${NVIDIA_SMI_GPU_MONITOR_REPORT_SECONDS:-60}"
+RESOURCE_MONITOR="${RESOURCE_MONITOR:-${NVIDIA_SMI_GPU_MONITOR:-1}}"
+RESOURCE_MONITOR_SAMPLE_SECONDS="${RESOURCE_MONITOR_SAMPLE_SECONDS:-${NVIDIA_SMI_GPU_MONITOR_SAMPLE_SECONDS:-5}}"
+RESOURCE_MONITOR_REPORT_SECONDS="${RESOURCE_MONITOR_REPORT_SECONDS:-${NVIDIA_SMI_GPU_MONITOR_REPORT_SECONDS:-60}}"
+RESOURCE_MONITOR_MEMORY_LIMIT_MIB="${RESOURCE_MONITOR_MEMORY_LIMIT_MIB:-${SLURM_MEM_PER_NODE:-}}"
 NVIDIA_SMI_BIN="${NVIDIA_SMI_BIN:-nvidia-smi}"
 
 export HF_HOME
@@ -79,20 +80,22 @@ source /scratch/atatc/venv_slcpfm/bin/activate
 monitor_pid=""
 cleanup() {
   if [[ -n "${monitor_pid}" ]] && kill -0 "${monitor_pid}" 2>/dev/null; then
-    echo "Stopping nvidia-smi GPU monitor pid=${monitor_pid}"
+    echo "Stopping resource monitor pid=${monitor_pid}"
     kill "${monitor_pid}" 2>/dev/null || true
     wait "${monitor_pid}" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT TERM INT
 
-if [[ "${NVIDIA_SMI_GPU_MONITOR}" != "0" ]]; then
+if [[ "${RESOURCE_MONITOR}" != "0" ]]; then
   monitor_label="${SLURM_JOB_ID}_distill"
-  echo "Starting nvidia-smi GPU monitor: label=${monitor_label}"
-  python -u scripts/nvidia_smi_gpu_monitor.py \
+  echo "Starting resource monitor: label=${monitor_label}"
+  python -u scripts/resource_monitor.py \
     --label "${monitor_label}" \
-    --sample-interval-seconds "${NVIDIA_SMI_GPU_MONITOR_SAMPLE_SECONDS}" \
-    --report-interval-seconds "${NVIDIA_SMI_GPU_MONITOR_REPORT_SECONDS}" \
+    --sample-interval-seconds "${RESOURCE_MONITOR_SAMPLE_SECONDS}" \
+    --report-interval-seconds "${RESOURCE_MONITOR_REPORT_SECONDS}" \
+    --cpu-capacity "${SLURM_CPUS_PER_TASK:-4}" \
+    --memory-limit-mib "${RESOURCE_MONITOR_MEMORY_LIMIT_MIB}" \
     --nvidia-smi-bin "${NVIDIA_SMI_BIN}" &
   monitor_pid="$!"
 fi

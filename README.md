@@ -111,23 +111,29 @@ After each completed run, inspect usage and keep trimming requests:
 seff <jobid_or_array_task>
 ```
 
-The Slurm scripts also start an `nvidia-smi` GPU monitor by default. It samples GPU stats every 5 seconds and prints
-the maximum GPU memory utilization seen in each 60-second window to the Slurm `.out` log:
+The Slurm scripts also start a resource monitor by default. For distillation jobs, it samples CPU, CPU memory, GPU, and
+GPU memory every 5 seconds and prints both 60-second window peaks and a final whole-job summary to the Slurm `.out` log:
 
 ```text
-[nvidia-smi-gpu] ... max_memory_utilization=...
+[resource-summary] ... max_cpu_utilization=... max_cpu_memory_utilization=... max_gpu_utilization=... max_gpu_memory_utilization=...
+```
+
+After a smoke test finishes, get the final peak utilization line with:
+
+```bash
+grep '\[resource-summary\]' logs/slc-pfm-distill_<jobid>.out
 ```
 
 You can change or disable monitoring at submit time:
 
 ```bash
 sbatch \
-  --export=ALL,NVIDIA_SMI_GPU_MONITOR_REPORT_SECONDS=60,NVIDIA_SMI_GPU_MONITOR_SAMPLE_SECONDS=5 \
-  slurm/extract_features_fir.sbatch
+  --export=ALL,RESOURCE_MONITOR_REPORT_SECONDS=60,RESOURCE_MONITOR_SAMPLE_SECONDS=5 \
+  slurm/train_cradio_distill_fir.sbatch
 
 sbatch \
-  --export=ALL,NVIDIA_SMI_GPU_MONITOR=0 \
-  slurm/extract_features_fir.sbatch
+  --export=ALL,RESOURCE_MONITOR=0 \
+  slurm/train_cradio_distill_fir.sbatch
 ```
 
 ## C-RADIO Distillation
@@ -158,7 +164,7 @@ dense spatial loss immediately:
 ```bash
 sbatch \
   --time=00:30:00 \
-  --export=ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_patch_smoke,ONLINE_TOKEN_TEACHERS=1,LIMIT_ZIPS=4,STATS_MAX_FILES=4,MAX_STEPS=20,BATCH_SIZE=2 \
+  --export=ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_patch_smoke,ONLINE_TOKEN_TEACHERS=1,LIMIT_ZIPS=4,STATS_MAX_FILES=4,MAX_STEPS=20,BATCH_SIZE=2,RESOURCE_MONITOR_SAMPLE_SECONDS=1,RESOURCE_MONITOR_REPORT_SECONDS=60 \
   slurm/train_cradio_distill_fir.sbatch
 ```
 
