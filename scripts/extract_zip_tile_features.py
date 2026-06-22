@@ -239,19 +239,23 @@ def run_batch(
     device: str,
     amp_dtype: str,
     include_token_maps: bool,
-) -> tuple[Any, Any | None, tuple[int, int] | None]:
+    token_maps_only: bool,
+) -> tuple[Any | None, Any | None, tuple[int, int] | None]:
     import torch
 
     with torch.inference_mode(), autocast_context(device, amp_dtype):
-        output = tensor_from_output(model(batch))
+        if token_maps_only and hasattr(model, "forward_features"):
+            output = tensor_from_output(model.forward_features(batch))
+        else:
+            output = tensor_from_output(model(batch))
 
         if output.ndim == 2:
-            embeddings = output
+            embeddings = None if token_maps_only else output
             token_source = None
             if include_token_maps and hasattr(model, "forward_features"):
                 token_source = tensor_from_output(model.forward_features(batch))
         elif output.ndim == 3:
-            embeddings = output[:, 0, :]
+            embeddings = None if token_maps_only else output[:, 0, :]
             token_source = output
         else:
             raise ValueError(f"unexpected model output shape: {tuple(output.shape)}")
@@ -293,6 +297,7 @@ def extract_zip_features(
     amp_dtype: str,
     save_dtype: str,
     include_token_maps: bool,
+    token_maps_only: bool,
     overwrite: bool,
     fail_fast: bool,
     log_every_batches: int,
@@ -333,8 +338,10 @@ def extract_zip_features(
             device=device,
             amp_dtype=amp_dtype,
             include_token_maps=include_token_maps,
+            token_maps_only=token_maps_only,
         )
-        embeddings_out.append(convert_save_dtype(embeddings.detach().cpu(), save_dtype))
+        if not token_maps_only and embeddings is not None:
+            embeddings_out.append(convert_save_dtype(embeddings.detach().cpu(), save_dtype))
         if token_maps is not None:
             token_maps_out.append(convert_save_dtype(token_maps.detach().cpu(), save_dtype))
             grid_size = batch_grid_size
@@ -364,7 +371,9 @@ def extract_zip_features(
 
     flush_batch()
 
-    if embeddings_out:
+    if token_maps_only:
+        features = None
+    elif embeddings_out:
         features = torch.cat(embeddings_out, dim=0)
     else:
         features = torch.empty((0, 0), dtype=torch.float32)
@@ -373,15 +382,21 @@ def extract_zip_features(
         "encoder": spec.name,
         "source_zip": str(zip_path),
         "tile_names": tile_names,
-        "features": features,
-        "feature_kind": "cls_embedding",
+        "feature_kind": "token_maps_only" if token_maps_only else "cls_embedding",
         "errors": errors,
         "created_unix_time": time.time(),
     }
+    if features is not None:
+        payload["features"] = features
     if token_maps_out:
         payload["token_maps"] = torch.cat(token_maps_out, dim=0)
         payload["token_map_kind"] = "patch_tokens"
         payload["token_grid_size"] = grid_size
+    elif include_token_maps:
+        raise RuntimeError(
+            f"{spec.name} did not produce token maps for {zip_path}. "
+            "Check whether the model exposes forward_features token outputs."
+        )
 
     save_payload(payload, out_path)
     elapsed = time.monotonic() - started_at
@@ -433,6 +448,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also save patch-token feature maps when available. This can greatly increase output size.",
     )
+    parser.add_argument(
+        "--token-maps-only",
+        action="store_true",
+        help="Save only patch-token maps and metadata, omitting summary features already extracted elsewhere.",
+    )
     parser.add_argument("--hf-cache-dir", type=Path, help="Set HF_HOME before loading gated model weights.")
     parser.add_argument(
         "--log-every-batches",
@@ -452,6 +472,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stderr.reconfigure(line_buffering=True)
 
     args = build_parser().parse_args(argv)
+    if args.token_maps_only:
+        args.include_token_maps = True
 
     if args.hf_cache_dir:
         os.environ["HF_HOME"] = str(args.hf_cache_dir)
@@ -495,6 +517,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 amp_dtype=args.amp_dtype,
                 save_dtype=args.save_dtype,
                 include_token_maps=args.include_token_maps,
+                token_maps_only=args.token_maps_only,
                 overwrite=args.overwrite,
                 fail_fast=args.fail_fast,
                 log_every_batches=args.log_every_batches,

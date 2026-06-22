@@ -28,6 +28,8 @@ ENCODERS="${ENCODERS:-virchow2,hoptimus1,uni_v2}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
 LIMIT_ZIPS="${LIMIT_ZIPS:-}"
 LIMIT_TILES="${LIMIT_TILES:-}"
+INCLUDE_TOKEN_MAPS="${INCLUDE_TOKEN_MAPS:-0}"
+TOKEN_MAPS_ONLY="${TOKEN_MAPS_ONLY:-0}"
 LOG_EVERY_BATCHES="${LOG_EVERY_BATCHES:-3072}"
 NVIDIA_SMI_GPU_MONITOR="${NVIDIA_SMI_GPU_MONITOR:-1}"
 NVIDIA_SMI_GPU_MONITOR_SAMPLE_SECONDS="${NVIDIA_SMI_GPU_MONITOR_SAMPLE_SECONDS:-5}"
@@ -76,6 +78,12 @@ fi
 
 CHUNK_NAME="${CHUNK_NAME:-${CHUNKS[${TASK_ID}]}}"
 echo "Processing chunk: ${CHUNK_NAME}"
+if [[ "${INCLUDE_TOKEN_MAPS}" != "0" ]]; then
+  echo "Dense token-map extraction enabled. Consider using a separate OUTPUT_ROOT."
+fi
+if [[ "${TOKEN_MAPS_ONLY}" != "0" ]]; then
+  echo "Token-map-only extraction enabled. Summary feature tensors will be omitted."
+fi
 
 if [[ "${NVIDIA_SMI_GPU_MONITOR}" != "0" ]]; then
   monitor_label="${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID:-0}_${CHUNK_NAME}"
@@ -105,6 +113,14 @@ fi
 
 if [[ -n "${LIMIT_TILES}" ]]; then
   cmd+=(--limit-tiles "${LIMIT_TILES}")
+fi
+
+if [[ "${INCLUDE_TOKEN_MAPS}" != "0" || "${TOKEN_MAPS_ONLY}" != "0" ]]; then
+  cmd+=(--include-token-maps)
+fi
+
+if [[ "${TOKEN_MAPS_ONLY}" != "0" ]]; then
+  cmd+=(--token-maps-only)
 fi
 
 echo "Command:"

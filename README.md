@@ -129,3 +129,80 @@ sbatch \
   --export=ALL,NVIDIA_SMI_GPU_MONITOR=0 \
   slurm/extract_features_fir.sbatch
 ```
+
+## C-RADIO Distillation
+
+After extracting `virchow2`, `hoptimus1`, and `uni_v2` features, continue training from NVIDIA's C-RADIOv4 checkpoint
+with one new projection head per pathology teacher:
+
+```bash
+python scripts/train_cradio_distill.py \
+  --input-root /project/rrg-jma/shared/SLC-PFM \
+  --feature-root /project/rrg-jma/shared/SLC-PFM_features \
+  --output-dir /project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_virchow_hoptimus_uni \
+  --encoders virchow2,hoptimus1,uni_v2 \
+  --radio-version c-radio_v4-so400m \
+  --batch-size 64 \
+  --max-steps 100000
+```
+
+The implementation uses the actual `NVlabs/RADIO` TorchHub model as the student backbone and initializes it from
+`c-radio_v4-so400m` by default. Use `RADIO_VERSION=c-radio_v4-h` to start from C-RADIOv4-H instead. The current feature
+files contain CLS/summary embeddings by default, so this trains the C-RADIO summary distillation path for our three
+encoders.
+
+To reproduce the dense C-RADIO objective without storing the huge patch-token maps, use the saved summary embeddings and
+run the three pathology teachers frozen inside each training step. This extracts patch tokens on the fly and applies the
+dense spatial loss immediately:
+
+```bash
+sbatch \
+  --time=00:30:00 \
+  --export=ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_patch_smoke,ONLINE_TOKEN_TEACHERS=1,LIMIT_ZIPS=4,STATS_MAX_FILES=4,MAX_STEPS=20,BATCH_SIZE=2 \
+  slurm/train_cradio_distill_fir.sbatch
+```
+
+Full online patch-token run:
+
+```bash
+sbatch \
+  --export=ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_patch_virchow_hoptimus_uni,ONLINE_TOKEN_TEACHERS=1,BATCH_SIZE=4,MAX_STEPS=100000 \
+  slurm/train_cradio_distill_fir.sbatch
+```
+
+On-the-fly patch-token training is much slower than summary-only distillation because every batch runs the C-RADIO
+student plus all three frozen teachers. Use a small `BATCH_SIZE` first, then increase it after checking `nvidia-smi`
+memory headroom.
+
+If you prefer to spend storage instead of recomputing teacher patch tokens every epoch, you can still extract only dense
+patch-token maps to a separate token-map root:
+
+```bash
+N=$(find /project/rrg-jma/shared/SLC-PFM -mindepth 1 -maxdepth 1 -type d -name 'chunk_*' | wc -l)
+
+sbatch \
+  --array=0-$((N-1))%2 \
+  --export=ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,OUTPUT_ROOT=/project/rrg-jma/shared/SLC-PFM_token_maps,ENCODERS=virchow2,hoptimus1,uni_v2,BATCH_SIZE=32,TOKEN_MAPS_ONLY=1 \
+  slurm/extract_features_fir.sbatch
+```
+
+Smoke test dense extraction first:
+
+```bash
+sbatch \
+  --array=0-0 \
+  --time=00:30:00 \
+  --export=ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,OUTPUT_ROOT=/project/rrg-jma/shared/SLC-PFM_token_maps,ENCODERS=virchow2,LIMIT_ZIPS=1,LIMIT_TILES=128,BATCH_SIZE=16,TOKEN_MAPS_ONLY=1 \
+  slurm/extract_features_fir.sbatch
+```
+
+Dense C-RADIO run after `SLC-PFM_token_maps` is ready. `FEATURE_ROOT` points to your existing summary embeddings, and
+`TOKEN_FEATURE_ROOT` points to the token-map-only files:
+
+```bash
+sbatch \
+  --export=ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,TOKEN_FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_token_maps,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_dense_virchow_hoptimus_uni,INCLUDE_TOKEN_MAPS=1,BATCH_SIZE=16,MAX_STEPS=100000 \
+  slurm/train_cradio_distill_fir.sbatch
+```
+
+Checkpoints and cached teacher statistics are written under `OUTPUT_DIR`.
