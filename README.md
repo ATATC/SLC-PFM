@@ -163,7 +163,7 @@ dense spatial loss immediately:
 
 ```bash
 sbatch \
-  --time=00:30:00 \
+  --time=02:00:00 \
   --export=ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_patch_smoke,ONLINE_TOKEN_TEACHERS=1,LIMIT_ZIPS=4,STATS_MAX_FILES=4,MAX_STEPS=20,BATCH_SIZE=2,RESOURCE_MONITOR_SAMPLE_SECONDS=1,RESOURCE_MONITOR_REPORT_SECONDS=60 \
   slurm/train_cradio_distill_fir.sbatch
 ```

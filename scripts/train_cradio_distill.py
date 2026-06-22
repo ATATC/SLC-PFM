@@ -105,21 +105,37 @@ def load_feature_tensors(
     )
 
 
-def discover_feature_sets(feature_root: Path, encoders: Sequence[str], token_feature_root: Path | None = None) -> list[Path]:
+def iter_feature_rel_paths(first_root: Path) -> Iterator[Path]:
+    for child in sorted(first_root.iterdir(), key=lambda path: natural_key(path.name)):
+        if child.is_file() and child.suffix == ".pt":
+            yield child.relative_to(first_root)
+        elif child.is_dir():
+            paths = sorted(
+                child.rglob("*.pt"),
+                key=lambda path: natural_key(str(path.relative_to(first_root))),
+            )
+            for path in paths:
+                yield path.relative_to(first_root)
+
+
+def discover_feature_sets(
+    feature_root: Path,
+    encoders: Sequence[str],
+    token_feature_root: Path | None = None,
+    limit: int | None = None,
+) -> list[Path]:
     first_root = feature_root / encoders[0]
     if not first_root.exists():
         raise FileNotFoundError(f"missing feature directory: {first_root}")
 
-    rel_paths = sorted(
-        (path.relative_to(first_root) for path in first_root.rglob("*.pt")),
-        key=lambda path: natural_key(str(path)),
-    )
     complete = []
-    for rel_path in rel_paths:
+    for rel_path in iter_feature_rel_paths(first_root):
         has_summary = all((feature_root / encoder / rel_path).exists() for encoder in encoders)
         has_tokens = token_feature_root is None or all((token_feature_root / encoder / rel_path).exists() for encoder in encoders)
         if has_summary and has_tokens:
             complete.append(rel_path)
+            if limit is not None and len(complete) >= limit:
+                break
     return complete
 
 
@@ -226,6 +242,7 @@ def load_online_teacher(
     if encoder not in ONLINE_TEACHER_SPECS:
         raise ValueError(f"unsupported online teacher: {encoder}")
     spec = ONLINE_TEACHER_SPECS[encoder]
+    log(f"Loading online patch-token teacher {encoder} from {spec.hf_model}")
 
     if encoder == "virchow2":
         model = timm.create_model(
@@ -753,9 +770,8 @@ def train(args: argparse.Namespace) -> None:
         args.feature_root,
         encoders,
         cached_token_root,
+        limit=args.limit_zips,
     )
-    if args.limit_zips is not None:
-        rel_paths = rel_paths[: args.limit_zips]
     if not rel_paths:
         raise RuntimeError(f"no complete teacher feature sets under {args.feature_root}")
     log(f"Found {len(rel_paths)} complete zip feature set(s)")
@@ -801,6 +817,7 @@ def train(args: argparse.Namespace) -> None:
         else {encoder: stats.spatial[encoder].dim for encoder in encoders if encoder in stats.spatial}
     )
     stats = stats_to_device(stats, device)
+    log(f"Loading C-RADIO student {args.radio_version} from {args.radio_repo}")
     model = build_student(
         radio_version=args.radio_version,
         radio_repo=args.radio_repo,
