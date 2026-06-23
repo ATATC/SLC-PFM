@@ -191,10 +191,30 @@ class OnlineTeacher:
     std: Any
     prefix_tokens: int
     token_dim: int
+    token_grid_size: tuple[int, int]
 
 
 def normalize_for_teacher(images: Any, teacher: OnlineTeacher) -> Any:
     return (images - teacher.mean) / teacher.std
+
+
+def split_square_patch_tokens(output: Any, preferred_prefix_tokens: int, teacher_name: str) -> tuple[Any, int, tuple[int, int]]:
+    if output.ndim != 3:
+        raise ValueError(f"{teacher_name} did not return token features; got shape={tuple(output.shape)}")
+
+    total_tokens = int(output.shape[1])
+    candidates: list[tuple[int, int, int, int]] = []
+    for prefix_tokens in range(total_tokens):
+        patch_tokens = total_tokens - prefix_tokens
+        side = math.isqrt(patch_tokens)
+        if side > 0 and side * side == patch_tokens:
+            candidates.append((abs(prefix_tokens - preferred_prefix_tokens), -patch_tokens, prefix_tokens, side))
+
+    if not candidates:
+        raise ValueError(f"{teacher_name} returned no square patch-token suffix; got shape={tuple(output.shape)}")
+
+    _, _, prefix_tokens, side = min(candidates)
+    return output[:, prefix_tokens:, :].float(), prefix_tokens, (side, side)
 
 
 def extract_online_patch_tokens(
@@ -211,11 +231,8 @@ def extract_online_patch_tokens(
         else:
             output = tensor_from_model_output(teacher.model(teacher_images))
 
-    if output.ndim != 3 or output.shape[1] <= teacher.prefix_tokens:
-        raise ValueError(
-            f"{teacher.name} did not return patch tokens from forward_features; got shape={tuple(output.shape)}"
-        )
-    return output[:, teacher.prefix_tokens :, :].float()
+    patch_tokens, _, _ = split_square_patch_tokens(output, teacher.prefix_tokens, teacher.name)
+    return patch_tokens
 
 
 def infer_online_token_dim(
@@ -227,7 +244,7 @@ def infer_online_token_dim(
     device: str,
     tile_size: int,
     amp_dtype: str,
-) -> int:
+) -> tuple[int, int, tuple[int, int]]:
     import torch
 
     probe = torch.zeros(1, 3, tile_size, tile_size, device=device)
@@ -237,9 +254,8 @@ def infer_online_token_dim(
             output = tensor_from_model_output(model.forward_features(probe_input))
         else:
             output = tensor_from_model_output(model(probe_input))
-    if output.ndim != 3 or output.shape[1] <= prefix_tokens:
-        raise ValueError(f"expected patch tokens from online teacher probe, got shape={tuple(output.shape)}")
-    return int(output.shape[-1])
+    patch_tokens, actual_prefix_tokens, token_grid_size = split_square_patch_tokens(output, prefix_tokens, "online teacher probe")
+    return int(patch_tokens.shape[-1]), actual_prefix_tokens, token_grid_size
 
 
 def load_online_teacher(
@@ -307,7 +323,7 @@ def load_online_teacher(
 
     mean_tensor = torch.tensor(mean, device=device, dtype=torch.float32).view(1, 3, 1, 1)
     std_tensor = torch.tensor(std, device=device, dtype=torch.float32).view(1, 3, 1, 1)
-    token_dim = infer_online_token_dim(
+    token_dim, actual_prefix_tokens, token_grid_size = infer_online_token_dim(
         model=model,
         mean=mean_tensor,
         std=std_tensor,
@@ -316,14 +332,19 @@ def load_online_teacher(
         tile_size=tile_size,
         amp_dtype=amp_dtype,
     )
-    log(f"Loaded online patch-token teacher {encoder}: dim={token_dim} prefix_tokens={spec.prefix_tokens}")
+    log(
+        f"Loaded online patch-token teacher {encoder}: dim={token_dim} "
+        f"prefix_tokens={actual_prefix_tokens} configured_prefix_tokens={spec.prefix_tokens} "
+        f"token_grid_size={token_grid_size[0]}x{token_grid_size[1]}"
+    )
     return OnlineTeacher(
         name=encoder,
         model=model,
         mean=mean_tensor,
         std=std_tensor,
-        prefix_tokens=spec.prefix_tokens,
+        prefix_tokens=actual_prefix_tokens,
         token_dim=token_dim,
+        token_grid_size=token_grid_size,
     )
 
 
