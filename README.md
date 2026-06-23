@@ -173,13 +173,13 @@ Full online patch-token run:
 ```bash
 sbatch \
   --time=36:00:00 \
-  --export=ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_patch_virchow_hoptimus_uni,ONLINE_TOKEN_TEACHERS=1,BATCH_SIZE=16,EPOCHS=3,AUTO_RESUME=1,SAVE_EVERY=1000 \
+  --export=ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_patch_virchow_hoptimus_uni,ONLINE_TOKEN_TEACHERS=1,BATCH_SIZE=8,EPOCHS=3,AUTO_RESUME=1,SAVE_EVERY=1000 \
   slurm/train_cradio_distill_fir.sbatch
 ```
 
 On-the-fly patch-token training is much slower than summary-only distillation because every batch runs the C-RADIO
 student plus all three frozen teachers. The current Slurm script requests one full H100, 8 CPUs, and 32 GB memory for
-the larger `BATCH_SIZE=16` run.
+the `BATCH_SIZE=8` run. A `BATCH_SIZE=16` smoke failed during backward with a CUDA/CUBLAS allocation error.
 
 Checkpoints are written as both `checkpoint_step*.pt` and `checkpoint_latest.pt`. With `AUTO_RESUME=1`, a restarted job
 continues from the latest checkpoint in `OUTPUT_DIR`. If a job stops mid-epoch, resume restarts that epoch from the

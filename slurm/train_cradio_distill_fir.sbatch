@@ -2,8 +2,8 @@
 #SBATCH --job-name=slc-pfm-distill
 #SBATCH --account=rrg-jma
 #SBATCH --gpus-per-node=h100:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=48G
 #SBATCH --time=12:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
@@ -36,7 +36,7 @@ ONLINE_TOKEN_TEACHERS="${ONLINE_TOKEN_TEACHERS:-0}"
 BATCH_SIZE="${BATCH_SIZE:-}"
 if [[ -z "${BATCH_SIZE}" ]]; then
   if [[ "${ONLINE_TOKEN_TEACHERS}" != "0" ]]; then
-    BATCH_SIZE=16
+    BATCH_SIZE=4
   else
     BATCH_SIZE=64
   fi
