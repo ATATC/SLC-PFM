@@ -42,8 +42,11 @@ if [[ -z "${BATCH_SIZE}" ]]; then
   fi
 fi
 NUM_WORKERS="${NUM_WORKERS:-4}"
-MAX_STEPS="${MAX_STEPS:-100000}"
+MAX_STEPS="${MAX_STEPS:-}"
+EPOCHS="${EPOCHS:-}"
 ESTIMATE_TOTAL_STEPS="${ESTIMATE_TOTAL_STEPS:-100000}"
+RESUME_CHECKPOINT="${RESUME_CHECKPOINT:-}"
+AUTO_RESUME="${AUTO_RESUME:-1}"
 LR="${LR:-3e-4}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.05}"
 TILE_SIZE="${TILE_SIZE:-224}"
@@ -112,7 +115,6 @@ cmd=(
   --radio-source "${RADIO_SOURCE}"
   --batch-size "${BATCH_SIZE}"
   --num-workers "${NUM_WORKERS}"
-  --max-steps "${MAX_STEPS}"
   --estimate-total-steps "${ESTIMATE_TOTAL_STEPS}"
   --lr "${LR}"
   --weight-decay "${WEIGHT_DECAY}"
@@ -122,6 +124,22 @@ cmd=(
   --log-every "${LOG_EVERY}"
   --spatial-loss-weight "${SPATIAL_LOSS_WEIGHT}"
 )
+
+if [[ -n "${MAX_STEPS}" ]]; then
+  cmd+=(--max-steps "${MAX_STEPS}")
+fi
+
+if [[ -n "${EPOCHS}" ]]; then
+  cmd+=(--epochs "${EPOCHS}")
+fi
+
+if [[ -n "${RESUME_CHECKPOINT}" ]]; then
+  cmd+=(--resume-checkpoint "${RESUME_CHECKPOINT}")
+fi
+
+if [[ "${AUTO_RESUME}" != "0" ]]; then
+  cmd+=(--auto-resume)
+fi
 
 if [[ -n "${TOKEN_FEATURE_ROOT}" ]]; then
   cmd+=(--token-feature-root "${TOKEN_FEATURE_ROOT}")

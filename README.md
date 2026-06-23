@@ -172,14 +172,18 @@ Full online patch-token run:
 
 ```bash
 sbatch \
-  --export=ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_patch_virchow_hoptimus_uni,ONLINE_TOKEN_TEACHERS=1,BATCH_SIZE=8,MAX_STEPS=100000 \
+  --time=36:00:00 \
+  --export=ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_patch_virchow_hoptimus_uni,ONLINE_TOKEN_TEACHERS=1,BATCH_SIZE=16,EPOCHS=3,AUTO_RESUME=1,SAVE_EVERY=1000 \
   slurm/train_cradio_distill_fir.sbatch
 ```
 
 On-the-fly patch-token training is much slower than summary-only distillation because every batch runs the C-RADIO
-student plus all three frozen teachers. The default Slurm request uses a 40 GB H100 MIG slice, 8 CPUs, and 32 GB memory
-to avoid tying up a full H100. If the `BATCH_SIZE=8` smoke test runs out of GPU memory, override with
-`--gpus-per-node=h100:1 --mem=64G`.
+student plus all three frozen teachers. The current Slurm script requests one full H100, 8 CPUs, and 32 GB memory for
+the larger `BATCH_SIZE=16` run.
+
+Checkpoints are written as both `checkpoint_step*.pt` and `checkpoint_latest.pt`. With `AUTO_RESUME=1`, a restarted job
+continues from the latest checkpoint in `OUTPUT_DIR`. If a job stops mid-epoch, resume restarts that epoch from the
+beginning while preserving model, optimizer, scaler, and global step state.
 
 If you prefer to spend storage instead of recomputing teacher patch tokens every epoch, you can still extract only dense
 patch-token maps to a separate token-map root:

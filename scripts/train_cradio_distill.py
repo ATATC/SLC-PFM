@@ -22,6 +22,7 @@ import json
 import math
 import os
 import random
+import shutil
 import sys
 import time
 import zipfile
@@ -361,6 +362,7 @@ class ZipFeatureDistillDataset(IterableDataset):
         require_token_maps: bool,
         seed: int,
         shuffle_zips: bool,
+        epoch: int = 0,
     ) -> None:
         self.input_root = input_root
         self.feature_root = feature_root
@@ -371,6 +373,10 @@ class ZipFeatureDistillDataset(IterableDataset):
         self.require_token_maps = require_token_maps
         self.seed = seed
         self.shuffle_zips = shuffle_zips
+        self.epoch = epoch
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
         import torch
@@ -378,7 +384,7 @@ class ZipFeatureDistillDataset(IterableDataset):
 
         worker_info = get_worker_info()
         rel_paths = list(self.rel_paths)
-        epoch_seed = self.seed + int(time.time() // 3600)
+        epoch_seed = self.seed + self.epoch
         if self.shuffle_zips:
             rng = random.Random(epoch_seed)
             rng.shuffle(rel_paths)
@@ -718,6 +724,59 @@ def load_stats(path: Path) -> DistillStats:
     )
 
 
+def latest_checkpoint_path(output_dir: Path) -> Path | None:
+    latest = output_dir / "checkpoint_latest.pt"
+    if latest.exists():
+        return latest
+
+    checkpoints = sorted(
+        output_dir.glob("checkpoint_step*.pt"),
+        key=lambda path: natural_key(path.name),
+    )
+    return checkpoints[-1] if checkpoints else None
+
+
+def save_checkpoint(
+    *,
+    output_dir: Path,
+    step: int,
+    epoch: int,
+    completed_epochs: int,
+    model: Any,
+    optimizer: Any,
+    scaler: Any,
+    args: argparse.Namespace,
+    teacher_dims: dict[str, int],
+    token_dims: dict[str, int],
+    stats: DistillStats,
+    config: dict[str, Any],
+) -> Path:
+    import torch
+
+    checkpoint_path = output_dir / f"checkpoint_step{step:07d}.pt"
+    payload = {
+        "step": step,
+        "epoch": epoch,
+        "completed_epochs": completed_epochs,
+        "radio_version": args.radio_version,
+        "radio_repo": args.radio_repo,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scaler_state_dict": scaler.state_dict(),
+        "teacher_dims": teacher_dims,
+        "token_dims": token_dims,
+        "teacher_stats": {
+            "summary": {encoder: asdict(value) for encoder, value in stats.summary.items()},
+            "spatial": {encoder: asdict(value) for encoder, value in stats.spatial.items()},
+        },
+        "config": config,
+    }
+    torch.save(payload, checkpoint_path)
+    latest_path = output_dir / "checkpoint_latest.pt"
+    shutil.copyfile(checkpoint_path, latest_path)
+    return checkpoint_path
+
+
 def balanced_summary_loss(prediction: Any, target: Any, stats: TeacherStats) -> Any:
     import torch.nn.functional as F
 
@@ -917,17 +976,55 @@ def train(args: argparse.Namespace) -> None:
     config["stats_path"] = str(stats_path)
     config_path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
 
-    model.train()
+    resume_path = args.resume_checkpoint
+    if args.auto_resume and resume_path is None:
+        resume_path = latest_checkpoint_path(output_dir)
+
     step = 0
+    start_epoch = 0
+    if resume_path is not None:
+        if not resume_path.exists():
+            raise FileNotFoundError(f"resume checkpoint does not exist: {resume_path}")
+        checkpoint = load_payload(resume_path)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        if "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if "scaler_state_dict" in checkpoint:
+            scaler.load_state_dict(checkpoint["scaler_state_dict"])
+        step = int(checkpoint.get("step", 0))
+        start_epoch = int(checkpoint.get("completed_epochs", checkpoint.get("epoch", 0)))
+        log(f"Resumed checkpoint {resume_path}: step={step} completed_epochs={start_epoch}")
+
+    if args.epochs is None and args.max_steps is None:
+        raise ValueError("set --epochs, --max-steps, or both")
+
+    target_epochs = args.epochs
+    if target_epochs is not None and start_epoch >= target_epochs:
+        log(f"Nothing to do: completed_epochs={start_epoch} >= target_epochs={target_epochs}")
+        return
+
+    model.train()
     images_seen = 0
     train_started_at = time.monotonic()
+    train_step_started = step
     log(
         f"Starting distillation on {device}: "
-        f"student={args.radio_version} batch_size={args.batch_size}"
+        f"student={args.radio_version} batch_size={args.batch_size} "
+        f"start_step={step} start_epoch={start_epoch} target_epochs={target_epochs} max_steps={args.max_steps}"
     )
-    while step < args.max_steps:
+    epoch = start_epoch
+    while True:
+        if target_epochs is not None and epoch >= target_epochs:
+            break
+        if args.max_steps is not None and step >= args.max_steps:
+            break
+
+        dataset.set_epoch(epoch)
+        epoch_started_at = time.monotonic()
+        epoch_step_started = step
+        log(f"Starting epoch {epoch + 1}" + (f"/{target_epochs}" if target_epochs is not None else ""))
         for batch in loader:
-            if step >= args.max_steps:
+            if args.max_steps is not None and step >= args.max_steps:
                 break
 
             images = batch["image"].to(device, non_blocking=True)
@@ -986,9 +1083,14 @@ def train(args: argparse.Namespace) -> None:
             if step % args.log_every == 0 or step == 1:
                 elapsed = max(time.monotonic() - train_started_at, 1e-6)
                 total_elapsed = max(time.monotonic() - run_started_at, 1e-6)
-                steps_per_sec = step / elapsed
+                measured_steps = max(step - train_step_started, 1)
+                steps_per_sec = measured_steps / elapsed
                 images_per_sec = images_seen / elapsed
-                smoke_total_seconds = total_elapsed + max(args.max_steps - step, 0) / max(steps_per_sec, 1e-12)
+                if args.max_steps is not None:
+                    smoke_total_seconds = total_elapsed + max(args.max_steps - step, 0) / max(steps_per_sec, 1e-12)
+                    smoke_total_bits = f"estimate_smoke_total_time={format_duration(smoke_total_seconds)} "
+                else:
+                    smoke_total_bits = ""
                 estimate_steps = args.estimate_total_steps
                 full_estimate_bits = ""
                 if estimate_steps is not None and estimate_steps > 0:
@@ -1004,33 +1106,74 @@ def train(args: argparse.Namespace) -> None:
                 )
                 log(
                     f"step={step} loss={float(loss.detach().cpu()):.5f} "
+                    f"epoch={epoch + 1} "
                     f"elapsed={elapsed:.1f}s total_elapsed={total_elapsed:.1f}s "
                     f"steps_per_sec={steps_per_sec:.4f} images_per_sec={images_per_sec:.2f} images_seen={images_seen} "
-                    f"estimate_smoke_total_time={format_duration(smoke_total_seconds)}"
+                    f"{smoke_total_bits}"
                     f"{full_estimate_bits} "
                     f"{loss_bits} {spatial_bits}"
                 )
 
-            if step % args.save_every == 0 or step == args.max_steps:
-                checkpoint_path = output_dir / f"checkpoint_step{step:07d}.pt"
-                torch.save(
-                    {
-                        "step": step,
-                        "radio_version": args.radio_version,
-                        "radio_repo": args.radio_repo,
-                        "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "teacher_dims": teacher_dims,
-                        "token_dims": token_dims,
-                        "teacher_stats": {
-                            "summary": {encoder: asdict(value) for encoder, value in stats.summary.items()},
-                            "spatial": {encoder: asdict(value) for encoder, value in stats.spatial.items()},
-                        },
-                        "config": config,
-                    },
-                    checkpoint_path,
+            if step % args.save_every == 0 or (args.max_steps is not None and step == args.max_steps):
+                checkpoint_path = save_checkpoint(
+                    output_dir=output_dir,
+                    step=step,
+                    epoch=epoch,
+                    completed_epochs=epoch,
+                    model=model,
+                    optimizer=optimizer,
+                    scaler=scaler,
+                    args=args,
+                    teacher_dims=teacher_dims,
+                    token_dims=token_dims,
+                    stats=stats,
+                    config=config,
                 )
                 log(f"saved checkpoint {checkpoint_path}")
+
+        if step == epoch_step_started:
+            raise RuntimeError("epoch produced no batches; check dataset/feature alignment")
+
+        if args.max_steps is not None and step >= args.max_steps:
+            checkpoint_path = save_checkpoint(
+                output_dir=output_dir,
+                step=step,
+                epoch=epoch,
+                completed_epochs=epoch,
+                model=model,
+                optimizer=optimizer,
+                scaler=scaler,
+                args=args,
+                teacher_dims=teacher_dims,
+                token_dims=token_dims,
+                stats=stats,
+                config=config,
+            )
+            log(f"reached max_steps={args.max_steps}; saved checkpoint {checkpoint_path}")
+            break
+
+        epoch += 1
+        epoch_elapsed = time.monotonic() - epoch_started_at
+        checkpoint_path = save_checkpoint(
+            output_dir=output_dir,
+            step=step,
+            epoch=epoch - 1,
+            completed_epochs=epoch,
+            model=model,
+            optimizer=optimizer,
+            scaler=scaler,
+            args=args,
+            teacher_dims=teacher_dims,
+            token_dims=token_dims,
+            stats=stats,
+            config=config,
+        )
+        log(
+            f"completed epoch {epoch}"
+            + (f"/{target_epochs}" if target_epochs is not None else "")
+            + f" steps_this_epoch={step - epoch_step_started} elapsed={format_duration(epoch_elapsed)} "
+            + f"checkpoint={checkpoint_path}"
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1056,12 +1199,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tile-size", type=int, default=224)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--max-steps", type=int, default=100000)
+    parser.add_argument("--max-steps", type=int, help="Optional maximum number of optimizer steps.")
+    parser.add_argument("--epochs", type=int, help="Number of full dataset passes to train.")
     parser.add_argument(
         "--estimate-total-steps",
         type=int,
         help="Optional full-run step count used only for ETA logging during smoke tests.",
     )
+    parser.add_argument("--resume-checkpoint", type=Path, help="Checkpoint path to resume from.")
+    parser.add_argument("--auto-resume", action="store_true", help="Resume from OUTPUT_DIR/checkpoint_latest.pt when present.")
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=0.05)
     parser.add_argument("--grad-clip-norm", type=float, default=1.0)
