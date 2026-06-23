@@ -821,6 +821,7 @@ def save_checkpoint(
     output_dir: Path,
     step: int,
     epoch: int,
+    epoch_step: int,
     completed_epochs: int,
     model: Any,
     optimizer: Any,
@@ -837,6 +838,7 @@ def save_checkpoint(
     payload = {
         "step": step,
         "epoch": epoch,
+        "epoch_step": epoch_step,
         "completed_epochs": completed_epochs,
         "radio_version": args.radio_version,
         "radio_repo": args.radio_repo,
@@ -1083,6 +1085,7 @@ def train(args: argparse.Namespace) -> None:
 
     step = 0
     start_epoch = 0
+    start_epoch_step = 0
     if resume_path is not None:
         if not resume_path.exists():
             raise FileNotFoundError(f"resume checkpoint does not exist: {resume_path}")
@@ -1094,15 +1097,27 @@ def train(args: argparse.Namespace) -> None:
             scaler.load_state_dict(checkpoint["scaler_state_dict"])
         step = int(checkpoint.get("step", 0))
         start_epoch = int(checkpoint.get("completed_epochs", checkpoint.get("epoch", 0)))
-        log(f"Resumed checkpoint {resume_path}: step={step} completed_epochs={start_epoch}")
+        start_epoch_step = int(checkpoint.get("epoch_step", 0))
+        log(
+            f"Resumed checkpoint {resume_path}: step={step} completed_epochs={start_epoch} "
+            f"epoch_step={start_epoch_step}"
+        )
 
-    if args.epochs is None and args.max_steps is None:
-        raise ValueError("set --epochs, --max-steps, or both")
+    if args.epochs is None and args.max_steps is None and args.max_run_steps is None:
+        raise ValueError("set --epochs, --max-steps, --max-run-steps, or a combination")
 
     target_epochs = args.epochs
+    run_stop_step = step + args.max_run_steps if args.max_run_steps is not None else None
     if target_epochs is not None and start_epoch >= target_epochs:
         log(f"Nothing to do: completed_epochs={start_epoch} >= target_epochs={target_epochs}")
         return
+
+    def stop_reason() -> str | None:
+        if args.max_steps is not None and step >= args.max_steps:
+            return f"max_steps={args.max_steps}"
+        if run_stop_step is not None and step >= run_stop_step:
+            return f"max_run_steps={args.max_run_steps}"
+        return None
 
     model.train()
     images_seen = 0
@@ -1111,22 +1126,30 @@ def train(args: argparse.Namespace) -> None:
     log(
         f"Starting distillation on {device}: "
         f"student={args.radio_version} batch_size={args.batch_size} "
-        f"start_step={step} start_epoch={start_epoch} target_epochs={target_epochs} max_steps={args.max_steps}"
+        f"start_step={step} start_epoch={start_epoch} start_epoch_step={start_epoch_step} "
+        f"target_epochs={target_epochs} max_steps={args.max_steps} max_run_steps={args.max_run_steps}"
     )
     epoch = start_epoch
     while True:
         if target_epochs is not None and epoch >= target_epochs:
             break
-        if args.max_steps is not None and step >= args.max_steps:
+        if stop_reason() is not None:
             break
 
         dataset.set_epoch(epoch)
         epoch_started_at = time.monotonic()
-        epoch_step_started = step
+        resume_epoch_step = start_epoch_step if epoch == start_epoch else 0
+        epoch_step_base = step - resume_epoch_step
         log(f"Starting epoch {epoch + 1}" + (f"/{target_epochs}" if target_epochs is not None else ""))
-        for batch in loader:
-            if args.max_steps is not None and step >= args.max_steps:
+        if resume_epoch_step:
+            log(f"Skipping {resume_epoch_step} already-trained batch(es) in epoch {epoch + 1}")
+        produced_batch_count = 0
+        for batch_index, batch in enumerate(loader):
+            if batch_index < resume_epoch_step:
+                continue
+            if stop_reason() is not None:
                 break
+            produced_batch_count += 1
 
             images = batch["image"].to(device, non_blocking=True)
             teachers = {
@@ -1215,11 +1238,13 @@ def train(args: argparse.Namespace) -> None:
                     f"{loss_bits} {spatial_bits}"
                 )
 
-            if step % args.save_every == 0 or (args.max_steps is not None and step == args.max_steps):
+            reason = stop_reason()
+            if step % args.save_every == 0 or reason is not None:
                 checkpoint_path = save_checkpoint(
                     output_dir=output_dir,
                     step=step,
                     epoch=epoch,
+                    epoch_step=step - epoch_step_base,
                     completed_epochs=epoch,
                     model=model,
                     optimizer=optimizer,
@@ -1232,14 +1257,16 @@ def train(args: argparse.Namespace) -> None:
                 )
                 log(f"saved checkpoint {checkpoint_path}")
 
-        if step == epoch_step_started:
+        if produced_batch_count == 0 and stop_reason() is None:
             raise RuntimeError("epoch produced no batches; check dataset/feature alignment")
 
-        if args.max_steps is not None and step >= args.max_steps:
+        reason = stop_reason()
+        if reason is not None:
             checkpoint_path = save_checkpoint(
                 output_dir=output_dir,
                 step=step,
                 epoch=epoch,
+                epoch_step=step - epoch_step_base,
                 completed_epochs=epoch,
                 model=model,
                 optimizer=optimizer,
@@ -1250,15 +1277,17 @@ def train(args: argparse.Namespace) -> None:
                 stats=stats,
                 config=config,
             )
-            log(f"reached max_steps={args.max_steps}; saved checkpoint {checkpoint_path}")
+            log(f"reached {reason}; saved checkpoint {checkpoint_path}")
             break
 
         epoch += 1
+        start_epoch_step = 0
         epoch_elapsed = time.monotonic() - epoch_started_at
         checkpoint_path = save_checkpoint(
             output_dir=output_dir,
             step=step,
             epoch=epoch - 1,
+            epoch_step=0,
             completed_epochs=epoch,
             model=model,
             optimizer=optimizer,
@@ -1272,7 +1301,7 @@ def train(args: argparse.Namespace) -> None:
         log(
             f"completed epoch {epoch}"
             + (f"/{target_epochs}" if target_epochs is not None else "")
-            + f" steps_this_epoch={step - epoch_step_started} elapsed={format_duration(epoch_elapsed)} "
+            + f" steps_this_epoch={step - epoch_step_base} elapsed={format_duration(epoch_elapsed)} "
             + f"checkpoint={checkpoint_path}"
         )
 
@@ -1301,6 +1330,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--max-steps", type=int, help="Optional maximum number of optimizer steps.")
+    parser.add_argument(
+        "--max-run-steps",
+        type=int,
+        help="Optional number of optimizer steps to run in this submission before checkpointing and exiting.",
+    )
     parser.add_argument("--epochs", type=int, help="Number of full dataset passes to train.")
     parser.add_argument(
         "--estimate-total-steps",

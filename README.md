@@ -184,8 +184,28 @@ training is much slower than summary-only distillation because every batch runs 
 teachers. A `BATCH_SIZE=16` smoke failed during backward with a CUDA/CUBLAS allocation error.
 
 Checkpoints are written as both `checkpoint_step*.pt` and `checkpoint_latest.pt`. With `AUTO_RESUME=1`, a restarted job
-continues from the latest checkpoint in `OUTPUT_DIR`. If a job stops mid-epoch, resume restarts that epoch from the
-beginning while preserving model, optimizer, scaler, and global step state.
+continues from the latest checkpoint in `OUTPUT_DIR`, including the batch position inside the current epoch when the
+checkpoint was created by this version of the script.
+
+For shorter queue times, split the sampled run into a dependency chain. `MAX_RUN_STEPS` limits how many optimizer steps
+one Slurm submission performs before checkpointing and exiting; the next job resumes from `checkpoint_latest.pt`.
+
+```bash
+cd /scratch/atatc/app/SLC-PFM
+
+base_export='ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_patch_sample_1of1000_3epochs,ONLINE_TOKEN_TEACHERS=1,SAMPLE_RATE_DENOMINATOR=1000,SAMPLE_RATE_OFFSET=0,BATCH_SIZE=4,EPOCHS=3,ESTIMATE_TOTAL_STEPS=176097,MAX_RUN_STEPS=25000,SAVE_EVERY=1000'
+
+dep=""
+for i in $(seq 1 8); do
+  if [[ -n "$dep" ]]; then
+    jid=$(sbatch --parsable --dependency=afterok:$dep --time=10:00:00 --export="$base_export" slurm/train_cradio_distill_fir.sbatch)
+  else
+    jid=$(sbatch --parsable --time=10:00:00 --export="$base_export" slurm/train_cradio_distill_fir.sbatch)
+  fi
+  echo "submitted chain job $i: $jid"
+  dep="$jid"
+done
+```
 
 If you prefer to spend storage instead of recomputing teacher patch tokens every epoch, you can still extract only dense
 patch-token maps to a separate token-map root:

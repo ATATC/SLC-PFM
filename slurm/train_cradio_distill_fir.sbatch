@@ -43,6 +43,7 @@ if [[ -z "${BATCH_SIZE}" ]]; then
 fi
 NUM_WORKERS="${NUM_WORKERS:-4}"
 MAX_STEPS="${MAX_STEPS:-}"
+MAX_RUN_STEPS="${MAX_RUN_STEPS:-}"
 EPOCHS="${EPOCHS:-}"
 ESTIMATE_TOTAL_STEPS="${ESTIMATE_TOTAL_STEPS:-100000}"
 RESUME_CHECKPOINT="${RESUME_CHECKPOINT:-}"
@@ -129,6 +130,10 @@ cmd=(
 
 if [[ -n "${MAX_STEPS}" ]]; then
   cmd+=(--max-steps "${MAX_STEPS}")
+fi
+
+if [[ -n "${MAX_RUN_STEPS}" ]]; then
+  cmd+=(--max-run-steps "${MAX_RUN_STEPS}")
 fi
 
 if [[ -n "${EPOCHS}" ]]; then
