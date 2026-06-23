@@ -164,7 +164,7 @@ dense spatial loss immediately:
 ```bash
 sbatch \
   --time=02:00:00 \
-  --export=ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_patch_smoke,ONLINE_TOKEN_TEACHERS=1,LIMIT_ZIPS=4,STATS_MAX_FILES=4,MAX_STEPS=20,ESTIMATE_TOTAL_STEPS=100000,BATCH_SIZE=2,RESOURCE_MONITOR_SAMPLE_SECONDS=1,RESOURCE_MONITOR_REPORT_SECONDS=60 \
+  --export=ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_patch_smoke,ONLINE_TOKEN_TEACHERS=1,LIMIT_ZIPS=4,STATS_MAX_FILES=4,MAX_STEPS=20,ESTIMATE_TOTAL_STEPS=100000,BATCH_SIZE=8,RESOURCE_MONITOR_SAMPLE_SECONDS=1,RESOURCE_MONITOR_REPORT_SECONDS=60 \
   slurm/train_cradio_distill_fir.sbatch
 ```
 
@@ -172,13 +172,14 @@ Full online patch-token run:
 
 ```bash
 sbatch \
-  --export=ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_patch_virchow_hoptimus_uni,ONLINE_TOKEN_TEACHERS=1,BATCH_SIZE=4,MAX_STEPS=100000 \
+  --export=ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_patch_virchow_hoptimus_uni,ONLINE_TOKEN_TEACHERS=1,BATCH_SIZE=8,MAX_STEPS=100000 \
   slurm/train_cradio_distill_fir.sbatch
 ```
 
 On-the-fly patch-token training is much slower than summary-only distillation because every batch runs the C-RADIO
-student plus all three frozen teachers. Use a small `BATCH_SIZE` first, then increase it after checking `nvidia-smi`
-memory headroom.
+student plus all three frozen teachers. The default Slurm request uses a 40 GB H100 MIG slice, 8 CPUs, and 32 GB memory
+to avoid tying up a full H100. If the `BATCH_SIZE=8` smoke test runs out of GPU memory, override with
+`--gpus-per-node=h100:1 --mem=64G`.
 
 If you prefer to spend storage instead of recomputing teacher patch tokens every epoch, you can still extract only dense
 patch-token maps to a separate token-map root:
