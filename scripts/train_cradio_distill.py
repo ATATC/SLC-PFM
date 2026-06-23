@@ -436,15 +436,36 @@ def build_student(
     import torch
     from torch import nn
 
+    def trust_torch_hub_repo(repo: str) -> None:
+        if radio_source != "github":
+            return
+        repo_without_ref = repo.split(":", 1)[0]
+        if "/" not in repo_without_ref:
+            return
+        owner, name = repo_without_ref.split("/", 1)
+        trusted_name = f"{owner}_{name}"
+        hub_dir = Path(torch.hub.get_dir())
+        hub_dir.mkdir(parents=True, exist_ok=True)
+        trusted_list = hub_dir / "trusted_list"
+        existing = set()
+        if trusted_list.exists():
+            existing = {line.strip() for line in trusted_list.read_text(encoding="utf-8").splitlines()}
+        if trusted_name not in existing:
+            with trusted_list.open("a", encoding="utf-8") as handle:
+                handle.write(f"{trusted_name}\n")
+            log(f"Added TorchHub trusted repo entry {trusted_name} in {trusted_list}")
+
     class Student(nn.Module):
         def __init__(self) -> None:
             super().__init__()
+            trust_torch_hub_repo(radio_repo)
             hub_kwargs: dict[str, Any] = {
                 "source": radio_source,
                 "version": radio_version,
                 "progress": True,
                 "skip_validation": True,
                 "force_reload": radio_force_reload,
+                "trust_repo": True,
             }
             if vitdet_window_size is not None:
                 hub_kwargs["vitdet_window_size"] = vitdet_window_size
@@ -862,6 +883,8 @@ def train(args: argparse.Namespace) -> None:
 
     model.train()
     step = 0
+    images_seen = 0
+    train_started_at = time.monotonic()
     log(
         f"Starting distillation on {device}: "
         f"student={args.radio_version} batch_size={args.batch_size}"
@@ -923,12 +946,19 @@ def train(args: argparse.Namespace) -> None:
             scaler.update()
 
             step += 1
+            images_seen += int(images.shape[0])
             if step % args.log_every == 0 or step == 1:
+                elapsed = max(time.monotonic() - train_started_at, 1e-6)
                 loss_bits = " ".join(f"{encoder}={float(value.detach().cpu()):.5f}" for encoder, value in losses.items())
                 spatial_bits = " ".join(
                     f"{encoder}_spatial={float(value.detach().cpu()):.5f}" for encoder, value in spatial_losses.items()
                 )
-                log(f"step={step} loss={float(loss.detach().cpu()):.5f} {loss_bits} {spatial_bits}")
+                log(
+                    f"step={step} loss={float(loss.detach().cpu()):.5f} "
+                    f"elapsed={elapsed:.1f}s steps_per_sec={step / elapsed:.4f} "
+                    f"images_per_sec={images_seen / elapsed:.2f} images_seen={images_seen} "
+                    f"{loss_bits} {spatial_bits}"
+                )
 
             if step % args.save_every == 0 or step == args.max_steps:
                 checkpoint_path = output_dir / f"checkpoint_step{step:07d}.pt"
