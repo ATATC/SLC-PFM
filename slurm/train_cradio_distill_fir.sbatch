@@ -43,6 +43,7 @@ if [[ -z "${BATCH_SIZE}" ]]; then
 fi
 NUM_WORKERS="${NUM_WORKERS:-4}"
 MAX_STEPS="${MAX_STEPS:-100000}"
+ESTIMATE_TOTAL_STEPS="${ESTIMATE_TOTAL_STEPS:-100000}"
 LR="${LR:-3e-4}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.05}"
 TILE_SIZE="${TILE_SIZE:-224}"
@@ -112,6 +113,7 @@ cmd=(
   --batch-size "${BATCH_SIZE}"
   --num-workers "${NUM_WORKERS}"
   --max-steps "${MAX_STEPS}"
+  --estimate-total-steps "${ESTIMATE_TOTAL_STEPS}"
   --lr "${LR}"
   --weight-decay "${WEIGHT_DECAY}"
   --tile-size "${TILE_SIZE}"

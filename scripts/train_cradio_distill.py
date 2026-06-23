@@ -66,6 +66,20 @@ def log(message: str) -> None:
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}", flush=True)
 
 
+def format_duration(seconds: float) -> str:
+    seconds = max(float(seconds), 0.0)
+    minutes, sec = divmod(int(round(seconds)), 60)
+    hours, minute = divmod(minutes, 60)
+    days, hour = divmod(hours, 24)
+    if days:
+        return f"{days}d{hour:02d}h{minute:02d}m{sec:02d}s"
+    if hours:
+        return f"{hour}h{minute:02d}m{sec:02d}s"
+    if minutes:
+        return f"{minute}m{sec:02d}s"
+    return f"{sec}s"
+
+
 def natural_key(value: str) -> list[int | str]:
     import re
 
@@ -779,6 +793,7 @@ def train(args: argparse.Namespace) -> None:
     import torch
     from torch.utils.data import DataLoader
 
+    run_started_at = time.monotonic()
     device = select_device(args.device)
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -949,14 +964,29 @@ def train(args: argparse.Namespace) -> None:
             images_seen += int(images.shape[0])
             if step % args.log_every == 0 or step == 1:
                 elapsed = max(time.monotonic() - train_started_at, 1e-6)
+                total_elapsed = max(time.monotonic() - run_started_at, 1e-6)
+                steps_per_sec = step / elapsed
+                images_per_sec = images_seen / elapsed
+                smoke_total_seconds = total_elapsed + max(args.max_steps - step, 0) / max(steps_per_sec, 1e-12)
+                estimate_steps = args.estimate_total_steps
+                full_estimate_bits = ""
+                if estimate_steps is not None and estimate_steps > 0:
+                    full_total_seconds = total_elapsed + max(estimate_steps - step, 0) / max(steps_per_sec, 1e-12)
+                    full_estimate_bits = (
+                        f" estimate_total_steps={estimate_steps} "
+                        f"estimate_total_time={format_duration(full_total_seconds)} "
+                        f"estimate_remaining_time={format_duration(max(full_total_seconds - total_elapsed, 0.0))}"
+                    )
                 loss_bits = " ".join(f"{encoder}={float(value.detach().cpu()):.5f}" for encoder, value in losses.items())
                 spatial_bits = " ".join(
                     f"{encoder}_spatial={float(value.detach().cpu()):.5f}" for encoder, value in spatial_losses.items()
                 )
                 log(
                     f"step={step} loss={float(loss.detach().cpu()):.5f} "
-                    f"elapsed={elapsed:.1f}s steps_per_sec={step / elapsed:.4f} "
-                    f"images_per_sec={images_seen / elapsed:.2f} images_seen={images_seen} "
+                    f"elapsed={elapsed:.1f}s total_elapsed={total_elapsed:.1f}s "
+                    f"steps_per_sec={steps_per_sec:.4f} images_per_sec={images_per_sec:.2f} images_seen={images_seen} "
+                    f"estimate_smoke_total_time={format_duration(smoke_total_seconds)}"
+                    f"{full_estimate_bits} "
                     f"{loss_bits} {spatial_bits}"
                 )
 
@@ -1006,6 +1036,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--max-steps", type=int, default=100000)
+    parser.add_argument(
+        "--estimate-total-steps",
+        type=int,
+        help="Optional full-run step count used only for ETA logging during smoke tests.",
+    )
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=0.05)
     parser.add_argument("--grad-clip-norm", type=float, default=1.0)
