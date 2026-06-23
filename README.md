@@ -168,18 +168,20 @@ sbatch \
   slurm/train_cradio_distill_fir.sbatch
 ```
 
-Full online patch-token run:
+Sampled online patch-token run over a deterministic 1/1000 tile subset:
 
 ```bash
 sbatch \
-  --time=36:00:00 \
-  --export=ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_patch_virchow_hoptimus_uni,ONLINE_TOKEN_TEACHERS=1,BATCH_SIZE=8,EPOCHS=3,AUTO_RESUME=1,SAVE_EVERY=1000 \
+  --time=60:00:00 \
+  --export=ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_patch_sample_1of1000_3epochs,ONLINE_TOKEN_TEACHERS=1,SAMPLE_RATE_DENOMINATOR=1000,SAMPLE_RATE_OFFSET=0,BATCH_SIZE=4,EPOCHS=3,ESTIMATE_TOTAL_STEPS=176097,AUTO_RESUME=1,SAVE_EVERY=1000 \
   slurm/train_cradio_distill_fir.sbatch
 ```
 
-On-the-fly patch-token training is much slower than summary-only distillation because every batch runs the C-RADIO
-student plus all three frozen teachers. The current Slurm script requests one full H100, 8 CPUs, and 32 GB memory for
-the `BATCH_SIZE=8` run. A `BATCH_SIZE=16` smoke failed during backward with a CUDA/CUBLAS allocation error.
+`SAMPLE_RATE_DENOMINATOR=1000` keeps a stable hash-based 1/1000 tile sample across all chunks, so three epochs means
+three passes over the same sampled subset. With 234,795,960 total tiles, this is about 234,796 sampled tiles,
+approximately 58,699 steps per epoch at `BATCH_SIZE=4`, or 176,097 steps for three epochs. On-the-fly patch-token
+training is much slower than summary-only distillation because every batch runs the C-RADIO student plus all three frozen
+teachers. A `BATCH_SIZE=16` smoke failed during backward with a CUDA/CUBLAS allocation error.
 
 Checkpoints are written as both `checkpoint_step*.pt` and `checkpoint_latest.pt`. With `AUTO_RESUME=1`, a restarted job
 continues from the latest checkpoint in `OUTPUT_DIR`. If a job stops mid-epoch, resume restarts that epoch from the

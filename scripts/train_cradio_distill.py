@@ -17,6 +17,7 @@ frozen teacher encoders.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import math
@@ -35,6 +36,29 @@ from torch.utils.data import IterableDataset
 
 
 DEFAULT_ENCODERS = ("virchow2", "hoptimus1", "uni_v2")
+
+
+@dataclass(frozen=True)
+class TileSampler:
+    denominator: int = 1
+    offset: int = 0
+
+    @property
+    def enabled(self) -> bool:
+        return self.denominator > 1
+
+    def keep(self, rel_path: Path, tile_name: str) -> bool:
+        if not self.enabled:
+            return True
+        key = f"{rel_path.as_posix()}\0{tile_name}".encode("utf-8")
+        digest = hashlib.blake2b(key, digest_size=8).digest()
+        value = int.from_bytes(digest, byteorder="big", signed=False)
+        return value % self.denominator == self.offset
+
+    def describe(self) -> str:
+        if not self.enabled:
+            return "full dataset"
+        return f"deterministic tile sample offset={self.offset}/{self.denominator}"
 
 
 @dataclass(frozen=True)
@@ -152,6 +176,12 @@ def discover_feature_sets(
             if limit is not None and len(complete) >= limit:
                 break
     return complete
+
+
+def sampled_tile_indices(tile_sampler: TileSampler, rel_path: Path, tile_names: Sequence[str]) -> list[int]:
+    if not tile_sampler.enabled:
+        return list(range(len(tile_names)))
+    return [index for index, tile_name in enumerate(tile_names) if tile_sampler.keep(rel_path, tile_name)]
 
 
 def image_from_zip(archive: zipfile.ZipFile, member: str) -> Any:
@@ -362,6 +392,7 @@ class ZipFeatureDistillDataset(IterableDataset):
         require_token_maps: bool,
         seed: int,
         shuffle_zips: bool,
+        tile_sampler: TileSampler,
         epoch: int = 0,
     ) -> None:
         self.input_root = input_root
@@ -373,6 +404,7 @@ class ZipFeatureDistillDataset(IterableDataset):
         self.require_token_maps = require_token_maps
         self.seed = seed
         self.shuffle_zips = shuffle_zips
+        self.tile_sampler = tile_sampler
         self.epoch = epoch
 
     def set_epoch(self, epoch: int) -> None:
@@ -438,6 +470,12 @@ class ZipFeatureDistillDataset(IterableDataset):
             for encoder in self.encoders[1:]:
                 common_tiles &= set(teacher_names[encoder])
             tile_names = sorted(common_tiles, key=natural_key)
+            if self.tile_sampler.enabled:
+                tile_names = [
+                    tile_name
+                    for tile_name in tile_names
+                    if self.tile_sampler.keep(rel_path, tile_name)
+                ]
             if not tile_names:
                 continue
 
@@ -578,6 +616,7 @@ def compute_teacher_stats(
     encoders: Sequence[str],
     max_files: int | None,
     include_token_maps: bool,
+    tile_sampler: TileSampler,
 ) -> DistillStats:
     import torch
     import torch.nn.functional as F
@@ -593,34 +632,47 @@ def compute_teacher_stats(
     spatial_counts: dict[str, int] = {encoder: 0 for encoder in encoders}
     spatial_dims: dict[str, int] = {}
 
-    log(f"Computing teacher mean directions from {len(paths)} zip feature set(s)")
+    log(f"Computing teacher mean directions from {len(paths)} zip feature set(s); sample={tile_sampler.describe()}")
 
-    def load_token_maps_for_stats(encoder: str, rel_path: Path, fallback_token_maps: Any | None = None) -> Any | None:
+    def load_token_maps_for_stats(
+        encoder: str,
+        rel_path: Path,
+        fallback_names: Sequence[str],
+        fallback_token_maps: Any | None = None,
+    ) -> tuple[list[str], Any | None]:
         if not include_token_maps:
-            return None
+            return list(fallback_names), None
         if token_feature_root is not None:
-            _, _, maps = load_feature_tensors(
+            token_names, _, maps = load_feature_tensors(
                 token_feature_root / encoder / rel_path,
                 require_features=False,
                 require_token_maps=True,
             )
-            return maps
-        return fallback_token_maps
+            return token_names, maps
+        return list(fallback_names), fallback_token_maps
 
     for rel_path in paths:
         for encoder in encoders:
-            _, features, token_maps = load_feature_tensors(
+            names, features, token_maps = load_feature_tensors(
                 feature_root / encoder / rel_path,
                 require_features=True,
                 require_token_maps=include_token_maps and token_feature_root is None,
             )
             assert features is not None
+            indices = sampled_tile_indices(tile_sampler, rel_path, names)
+            if not indices:
+                continue
+            features = features[indices]
             unit = F.normalize(features.float(), dim=-1)
             summary_sums[encoder] = unit.sum(dim=0) if encoder not in summary_sums else summary_sums[encoder] + unit.sum(dim=0)
             summary_counts[encoder] += int(unit.shape[0])
             summary_dims[encoder] = int(unit.shape[-1])
-            token_maps = load_token_maps_for_stats(encoder, rel_path, token_maps)
+            token_names, token_maps = load_token_maps_for_stats(encoder, rel_path, names, token_maps)
             if token_maps is not None:
+                token_indices = sampled_tile_indices(tile_sampler, rel_path, token_names)
+                if not token_indices:
+                    continue
+                token_maps = token_maps[token_indices]
                 tokens = token_maps.reshape(-1, token_maps.shape[-1])
                 token_unit = F.normalize(tokens.float(), dim=-1)
                 spatial_sums[encoder] = (
@@ -628,6 +680,13 @@ def compute_teacher_stats(
                 )
                 spatial_counts[encoder] += int(token_unit.shape[0])
                 spatial_dims[encoder] = int(token_unit.shape[-1])
+
+    missing_summary = [encoder for encoder in encoders if summary_counts[encoder] == 0]
+    if missing_summary:
+        raise RuntimeError(
+            f"tile sampling selected no summary features for {missing_summary}; "
+            "increase --stats-max-files, lower --sample-rate-denominator, or use a different --sample-rate-offset"
+        )
 
     mean_dirs = {
         encoder: F.normalize(summary_sums[encoder] / max(summary_counts[encoder], 1), dim=0)
@@ -642,16 +701,24 @@ def compute_teacher_stats(
     spatial_sq_sums = {encoder: 0.0 for encoder in spatial_sums}
     for rel_path in paths:
         for encoder in encoders:
-            _, features, token_maps = load_feature_tensors(
+            names, features, token_maps = load_feature_tensors(
                 feature_root / encoder / rel_path,
                 require_features=True,
                 require_token_maps=include_token_maps and token_feature_root is None,
             )
             assert features is not None
+            indices = sampled_tile_indices(tile_sampler, rel_path, names)
+            if not indices:
+                continue
+            features = features[indices]
             unit = F.normalize(features.float(), dim=-1)
             sq_sums[encoder] += float(((unit - mean_dirs[encoder]) ** 2).sum(dim=-1).sum().item())
-            token_maps = load_token_maps_for_stats(encoder, rel_path, token_maps)
+            token_names, token_maps = load_token_maps_for_stats(encoder, rel_path, names, token_maps)
             if token_maps is not None:
+                token_indices = sampled_tile_indices(tile_sampler, rel_path, token_names)
+                if not token_indices:
+                    continue
+                token_maps = token_maps[token_indices]
                 tokens = token_maps.reshape(-1, token_maps.shape[-1])
                 token_unit = F.normalize(tokens.float(), dim=-1)
                 spatial_sq_sums[encoder] += float(
@@ -701,7 +768,19 @@ def stats_to_device(stats: DistillStats, device: str) -> DistillStats:
     )
 
 
-def save_stats(stats: DistillStats, path: Path) -> None:
+def tile_sampler_metadata(tile_sampler: TileSampler) -> dict[str, int]:
+    return {
+        "sample_rate_denominator": tile_sampler.denominator,
+        "sample_rate_offset": tile_sampler.offset,
+    }
+
+
+def load_stats_sample_metadata(path: Path) -> dict[str, int] | None:
+    raw = load_payload(path)
+    return raw.get("tile_sampler")
+
+
+def save_stats(stats: DistillStats, path: Path, tile_sampler: TileSampler) -> None:
     import torch
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -709,6 +788,7 @@ def save_stats(stats: DistillStats, path: Path) -> None:
         {
             "summary": {encoder: asdict(value) for encoder, value in stats.summary.items()},
             "spatial": {encoder: asdict(value) for encoder, value in stats.spatial.items()},
+            "tile_sampler": tile_sampler_metadata(tile_sampler),
         },
         path,
     )
@@ -874,6 +954,14 @@ def train(args: argparse.Namespace) -> None:
     from torch.utils.data import DataLoader
 
     run_started_at = time.monotonic()
+    if args.sample_rate_denominator < 1:
+        raise ValueError("--sample-rate-denominator must be >= 1")
+    if args.sample_rate_offset < 0 or args.sample_rate_offset >= args.sample_rate_denominator:
+        raise ValueError("--sample-rate-offset must be in [0, --sample-rate-denominator)")
+    tile_sampler = TileSampler(
+        denominator=args.sample_rate_denominator,
+        offset=args.sample_rate_offset,
+    )
     device = select_device(args.device)
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -891,9 +979,20 @@ def train(args: argparse.Namespace) -> None:
     if not rel_paths:
         raise RuntimeError(f"no complete teacher feature sets under {args.feature_root}")
     log(f"Found {len(rel_paths)} complete zip feature set(s)")
+    log(f"Dataset sampling: {tile_sampler.describe()}")
 
     stats_path = args.stats_path or (output_dir / "teacher_stats.pt")
     if stats_path.exists() and not args.recompute_stats:
+        metadata = load_stats_sample_metadata(stats_path)
+        if metadata is None:
+            metadata = {"sample_rate_denominator": 1, "sample_rate_offset": 0}
+        expected_metadata = tile_sampler_metadata(tile_sampler)
+        if metadata != expected_metadata:
+            raise RuntimeError(
+                f"{stats_path} was computed with tile_sampler={metadata}, "
+                f"but this run requested tile_sampler={expected_metadata}. "
+                "Use --recompute-stats or a fresh OUTPUT_DIR."
+            )
         log(f"Loading teacher stats from {stats_path}")
         stats = load_stats(stats_path)
         if need_cached_spatial_stats and not all(encoder in stats.spatial for encoder in encoders):
@@ -910,8 +1009,9 @@ def train(args: argparse.Namespace) -> None:
             encoders=encoders,
             max_files=args.stats_max_files,
             include_token_maps=need_cached_spatial_stats,
+            tile_sampler=tile_sampler,
         )
-        save_stats(stats, stats_path)
+        save_stats(stats, stats_path, tile_sampler)
         log(f"Saved teacher stats to {stats_path}")
 
     teacher_dims = {encoder: stats.summary[encoder].dim for encoder in encoders}
@@ -954,6 +1054,7 @@ def train(args: argparse.Namespace) -> None:
         require_token_maps=need_cached_spatial_stats,
         seed=args.seed,
         shuffle_zips=not args.no_shuffle_zips,
+        tile_sampler=tile_sampler,
     )
     loader = DataLoader(
         dataset,
@@ -1207,7 +1308,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional full-run step count used only for ETA logging during smoke tests.",
     )
     parser.add_argument("--resume-checkpoint", type=Path, help="Checkpoint path to resume from.")
-    parser.add_argument("--auto-resume", action="store_true", help="Resume from OUTPUT_DIR/checkpoint_latest.pt when present.")
+    parser.add_argument(
+        "--auto-resume",
+        dest="auto_resume",
+        action="store_true",
+        default=True,
+        help="Resume from OUTPUT_DIR/checkpoint_latest.pt when present. Enabled by default.",
+    )
+    parser.add_argument(
+        "--no-auto-resume",
+        dest="auto_resume",
+        action="store_false",
+        help="Disable automatic resume from OUTPUT_DIR/checkpoint_latest.pt.",
+    )
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=0.05)
     parser.add_argument("--grad-clip-norm", type=float, default=1.0)
@@ -1215,6 +1328,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--limit-zips", type=int, help="Limit zip feature sets for smoke tests.")
+    parser.add_argument(
+        "--sample-rate-denominator",
+        type=int,
+        default=1,
+        help="Deterministically keep roughly 1/N tiles across the dataset. Use 1000 for a 1/1000 sample.",
+    )
+    parser.add_argument(
+        "--sample-rate-offset",
+        type=int,
+        default=0,
+        help="Hash bucket offset used with --sample-rate-denominator for reproducible non-overlapping folds.",
+    )
     parser.add_argument("--stats-path", type=Path, help="Optional path to cached teacher stats.")
     parser.add_argument("--stats-max-files", type=int, help="Limit files used to estimate teacher stats.")
     parser.add_argument("--recompute-stats", action="store_true")

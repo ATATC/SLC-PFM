@@ -54,6 +54,8 @@ AMP_DTYPE="${AMP_DTYPE:-bf16}"
 SAVE_EVERY="${SAVE_EVERY:-1000}"
 LOG_EVERY="${LOG_EVERY:-20}"
 LIMIT_ZIPS="${LIMIT_ZIPS:-}"
+SAMPLE_RATE_DENOMINATOR="${SAMPLE_RATE_DENOMINATOR:-}"
+SAMPLE_RATE_OFFSET="${SAMPLE_RATE_OFFSET:-0}"
 STATS_MAX_FILES="${STATS_MAX_FILES:-}"
 INCLUDE_TOKEN_MAPS="${INCLUDE_TOKEN_MAPS:-0}"
 SPATIAL_LOSS_WEIGHT="${SPATIAL_LOSS_WEIGHT:-1.0}"
@@ -139,6 +141,8 @@ fi
 
 if [[ "${AUTO_RESUME}" != "0" ]]; then
   cmd+=(--auto-resume)
+else
+  cmd+=(--no-auto-resume)
 fi
 
 if [[ -n "${TOKEN_FEATURE_ROOT}" ]]; then
@@ -155,6 +159,11 @@ fi
 
 if [[ -n "${LIMIT_ZIPS}" ]]; then
   cmd+=(--limit-zips "${LIMIT_ZIPS}")
+fi
+
+if [[ -n "${SAMPLE_RATE_DENOMINATOR}" ]]; then
+  cmd+=(--sample-rate-denominator "${SAMPLE_RATE_DENOMINATOR}")
+  cmd+=(--sample-rate-offset "${SAMPLE_RATE_OFFSET}")
 fi
 
 if [[ -n "${STATS_MAX_FILES}" ]]; then
