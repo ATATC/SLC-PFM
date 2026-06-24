@@ -60,6 +60,17 @@ SAMPLE_RATE_OFFSET="${SAMPLE_RATE_OFFSET:-0}"
 STATS_MAX_FILES="${STATS_MAX_FILES:-}"
 INCLUDE_TOKEN_MAPS="${INCLUDE_TOKEN_MAPS:-0}"
 SPATIAL_LOSS_WEIGHT="${SPATIAL_LOSS_WEIGHT:-1.0}"
+if [[ -n "${WANDB_API_KEY:-}" ]]; then
+  WANDB_PROJECT="${WANDB_PROJECT:-slc-pfm}"
+else
+  WANDB_PROJECT="${WANDB_PROJECT:-}"
+fi
+WANDB_ENTITY="${WANDB_ENTITY:-}"
+WANDB_NAME="${WANDB_NAME:-}"
+WANDB_RUN_ID="${WANDB_RUN_ID:-}"
+WANDB_GROUP="${WANDB_GROUP:-}"
+WANDB_TAGS="${WANDB_TAGS:-}"
+WANDB_MODE="${WANDB_MODE:-online}"
 RESOURCE_MONITOR="${RESOURCE_MONITOR:-${NVIDIA_SMI_GPU_MONITOR:-1}}"
 RESOURCE_MONITOR_SAMPLE_SECONDS="${RESOURCE_MONITOR_SAMPLE_SECONDS:-${NVIDIA_SMI_GPU_MONITOR_SAMPLE_SECONDS:-5}}"
 RESOURCE_MONITOR_REPORT_SECONDS="${RESOURCE_MONITOR_REPORT_SECONDS:-${NVIDIA_SMI_GPU_MONITOR_REPORT_SECONDS:-60}}"
@@ -181,6 +192,26 @@ fi
 
 if [[ "${ONLINE_TOKEN_TEACHERS}" != "0" ]]; then
   cmd+=(--online-token-teachers)
+fi
+
+if [[ -n "${WANDB_PROJECT}" ]]; then
+  cmd+=(--wandb-project "${WANDB_PROJECT}")
+  cmd+=(--wandb-mode "${WANDB_MODE}")
+  if [[ -n "${WANDB_ENTITY}" ]]; then
+    cmd+=(--wandb-entity "${WANDB_ENTITY}")
+  fi
+  if [[ -n "${WANDB_NAME}" ]]; then
+    cmd+=(--wandb-name "${WANDB_NAME}")
+  fi
+  if [[ -n "${WANDB_RUN_ID}" ]]; then
+    cmd+=(--wandb-id "${WANDB_RUN_ID}")
+  fi
+  if [[ -n "${WANDB_GROUP}" ]]; then
+    cmd+=(--wandb-group "${WANDB_GROUP}")
+  fi
+  if [[ -n "${WANDB_TAGS}" ]]; then
+    cmd+=(--wandb-tags "${WANDB_TAGS}")
+  fi
 fi
 
 echo "Command:"

@@ -207,6 +207,17 @@ for i in $(seq 1 8); do
 done
 ```
 
+WandB is enabled automatically when `WANDB_API_KEY` is present, using `slc-pfm` as the default project. To customize the
+run display, add these optional fields to `base_export`:
+
+```bash
+WANDB_NAME=cradio_v4_so400m_sample_1of1000,WANDB_TAGS=cradio,pathology,online-patch
+```
+
+The run id defaults to the output directory name, so chained jobs append to the same WandB run. Set `WANDB_PROJECT` or
+`WANDB_RUN_ID` if you want different values. Use `WANDB_MODE=offline` for local/offline logging, or `WANDB_MODE=disabled`
+to turn WandB off even when `WANDB_API_KEY` is set.
+
 If you prefer to spend storage instead of recomputing teacher patch tokens every epoch, you can still extract only dense
 patch-token maps to a separate token-map root:
 

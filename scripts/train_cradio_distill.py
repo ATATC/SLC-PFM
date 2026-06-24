@@ -91,6 +91,12 @@ def log(message: str) -> None:
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}", flush=True)
 
 
+def parse_tag_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 def format_duration(seconds: float) -> str:
     seconds = max(float(seconds), 0.0)
     minutes, sec = divmod(int(round(seconds)), 60)
@@ -804,6 +810,37 @@ def load_stats(path: Path) -> DistillStats:
     )
 
 
+def init_wandb(args: argparse.Namespace, config: dict[str, Any], output_dir: Path) -> Any | None:
+    wandb_project = args.wandb_project
+    if not wandb_project and os.environ.get("WANDB_API_KEY") and args.wandb_mode != "disabled":
+        wandb_project = "slc-pfm"
+    if not wandb_project:
+        return None
+    try:
+        import wandb
+    except ImportError as exc:
+        raise RuntimeError(
+            "WandB logging was requested but the 'wandb' package is not installed in this environment."
+        ) from exc
+
+    run_id = args.wandb_id or output_dir.name
+    run_name = args.wandb_name or output_dir.name
+    run = wandb.init(
+        project=wandb_project,
+        entity=args.wandb_entity,
+        name=run_name,
+        id=run_id,
+        group=args.wandb_group,
+        tags=parse_tag_list(args.wandb_tags),
+        resume="allow",
+        mode=args.wandb_mode,
+        config=config,
+        dir=str(output_dir),
+    )
+    log(f"WandB logging enabled: project={wandb_project} run_id={run_id} name={run_name}")
+    return run
+
+
 def latest_checkpoint_path(output_dir: Path) -> Path | None:
     latest = output_dir / "checkpoint_latest.pt"
     if latest.exists():
@@ -1078,6 +1115,7 @@ def train(args: argparse.Namespace) -> None:
     config["output_dir"] = str(output_dir)
     config["stats_path"] = str(stats_path)
     config_path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
+    wandb_run = init_wandb(args, config, output_dir)
 
     resume_path = args.resume_checkpoint
     if args.auto_resume and resume_path is None:
@@ -1228,6 +1266,28 @@ def train(args: argparse.Namespace) -> None:
                 spatial_bits = " ".join(
                     f"{encoder}_spatial={float(value.detach().cpu()):.5f}" for encoder, value in spatial_losses.items()
                 )
+                if wandb_run is not None:
+                    metrics = {
+                        "train/loss": float(loss.detach().cpu()),
+                        "train/epoch": epoch + 1,
+                        "train/epoch_step": step - epoch_step_base,
+                        "train/images_seen_this_run": images_seen,
+                        "train/lr": float(optimizer.param_groups[0]["lr"]),
+                        "perf/steps_per_sec": steps_per_sec,
+                        "perf/images_per_sec": images_per_sec,
+                        "time/elapsed_seconds": elapsed,
+                        "time/total_elapsed_seconds": total_elapsed,
+                    }
+                    metrics.update(
+                        {f"loss/summary_{encoder}": float(value.detach().cpu()) for encoder, value in losses.items()}
+                    )
+                    metrics.update(
+                        {
+                            f"loss/spatial_{encoder}": float(value.detach().cpu())
+                            for encoder, value in spatial_losses.items()
+                        }
+                    )
+                    wandb_run.log(metrics, step=step)
                 log(
                     f"step={step} loss={float(loss.detach().cpu()):.5f} "
                     f"epoch={epoch + 1} "
@@ -1304,6 +1364,9 @@ def train(args: argparse.Namespace) -> None:
             + f" steps_this_epoch={step - epoch_step_base} elapsed={format_duration(epoch_elapsed)} "
             + f"checkpoint={checkpoint_path}"
         )
+
+    if wandb_run is not None:
+        wandb_run.finish()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1387,6 +1450,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-shuffle-zips", action="store_true")
     parser.add_argument("--log-every", type=int, default=20)
     parser.add_argument("--save-every", type=int, default=1000)
+    parser.add_argument("--wandb-project", help="Enable WandB logging to this project.")
+    parser.add_argument("--wandb-entity", help="Optional WandB entity/team.")
+    parser.add_argument("--wandb-name", help="Optional WandB run display name. Defaults to output directory name.")
+    parser.add_argument("--wandb-id", help="Optional stable WandB run id. Defaults to output directory name.")
+    parser.add_argument("--wandb-group", help="Optional WandB run group.")
+    parser.add_argument("--wandb-tags", help="Comma-separated WandB tags.")
+    parser.add_argument("--wandb-mode", choices=("online", "offline", "disabled"), default="online")
     return parser
 
 
