@@ -22,6 +22,7 @@ echo "---"
 CODE_DIR="${CODE_DIR:-${SLURM_SUBMIT_DIR}}"
 INPUT_ROOT="${INPUT_ROOT:-/project/rrg-jma/shared/SLC-PFM}"
 FEATURE_ROOT="${FEATURE_ROOT:-/project/rrg-jma/shared/SLC-PFM_features}"
+FEATURE_MANIFEST="${FEATURE_MANIFEST:-}"
 TOKEN_FEATURE_ROOT="${TOKEN_FEATURE_ROOT:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_virchow_hoptimus_uni}"
 HF_HOME="${HF_HOME:-/project/rrg-jma/${USER}/hf_cache}"
@@ -163,6 +164,10 @@ fi
 
 if [[ -n "${TOKEN_FEATURE_ROOT}" ]]; then
   cmd+=(--token-feature-root "${TOKEN_FEATURE_ROOT}")
+fi
+
+if [[ -n "${FEATURE_MANIFEST}" ]]; then
+  cmd+=(--feature-manifest "${FEATURE_MANIFEST}")
 fi
 
 if [[ "${RADIO_FORCE_RELOAD}" != "0" ]]; then

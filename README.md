@@ -193,14 +193,21 @@ one Slurm submission performs before checkpointing and exiting; the next job res
 ```bash
 cd /scratch/atatc/app/SLC-PFM
 
-base_export='ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_patch_sample_1of1000_3epochs,ONLINE_TOKEN_TEACHERS=1,SAMPLE_RATE_DENOMINATOR=1000,SAMPLE_RATE_OFFSET=0,BATCH_SIZE=4,EPOCHS=3,ESTIMATE_TOTAL_STEPS=176097,MAX_RUN_STEPS=25000,SAVE_EVERY=1000'
+manifest=/project/rrg-jma/shared/SLC-PFM_distill/manifests/slc_pfm_complete_features_virchow2_hoptimus1_uni_v2.txt
+
+python scripts/build_feature_manifest.py \
+  --feature-root /project/rrg-jma/shared/SLC-PFM_features \
+  --encoders virchow2,hoptimus1,uni_v2 \
+  --output "$manifest"
+
+base_export="ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,FEATURE_MANIFEST=$manifest,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_patch_sample_1of1000_3epochs_manifest_20260625,ONLINE_TOKEN_TEACHERS=1,SAMPLE_RATE_DENOMINATOR=1000,SAMPLE_RATE_OFFSET=0,BATCH_SIZE=4,EPOCHS=3,ESTIMATE_TOTAL_STEPS=176097,MAX_RUN_STEPS=10000,SAVE_EVERY=1000,WANDB_NAME=cradio_v4_so400m_sample_1of1000_manifest_20260625,WANDB_TAGS=cradio"
 
 dep=""
-for i in $(seq 1 8); do
+for i in $(seq 1 18); do
   if [[ -n "$dep" ]]; then
-    jid=$(sbatch --parsable --dependency=afterok:$dep --time=10:00:00 --export="$base_export" slurm/train_cradio_distill_fir.sbatch)
+    jid=$(sbatch --parsable --dependency=afterok:$dep --time=04:00:00 --export="$base_export" slurm/train_cradio_distill_fir.sbatch)
   else
-    jid=$(sbatch --parsable --time=10:00:00 --export="$base_export" slurm/train_cradio_distill_fir.sbatch)
+    jid=$(sbatch --parsable --time=04:00:00 --export="$base_export" slurm/train_cradio_distill_fir.sbatch)
   fi
   echo "submitted chain job $i: $jid"
   dep="$jid"

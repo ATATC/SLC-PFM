@@ -184,6 +184,22 @@ def discover_feature_sets(
     return complete
 
 
+def load_feature_manifest(path: Path, limit: int | None = None) -> list[Path]:
+    rel_paths: list[Path] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, raw_line in enumerate(handle, start=1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            rel_path = Path(line)
+            if rel_path.is_absolute() or ".." in rel_path.parts:
+                raise ValueError(f"invalid relative path in manifest {path}:{line_number}: {line}")
+            rel_paths.append(rel_path)
+            if limit is not None and len(rel_paths) >= limit:
+                break
+    return rel_paths
+
+
 def sampled_tile_indices(tile_sampler: TileSampler, rel_path: Path, tile_names: Sequence[str]) -> list[int]:
     if not tile_sampler.enabled:
         return list(range(len(tile_names)))
@@ -1009,12 +1025,16 @@ def train(args: argparse.Namespace) -> None:
     token_feature_root = args.token_feature_root or args.feature_root
     cached_token_root = token_feature_root if args.include_token_maps and not args.online_token_teachers else None
     need_cached_spatial_stats = args.include_token_maps and not args.online_token_teachers
-    rel_paths = discover_feature_sets(
-        args.feature_root,
-        encoders,
-        cached_token_root,
-        limit=args.limit_zips,
-    )
+    if args.feature_manifest is not None:
+        rel_paths = load_feature_manifest(args.feature_manifest, limit=args.limit_zips)
+        log(f"Loaded {len(rel_paths)} complete zip feature set(s) from manifest {args.feature_manifest}")
+    else:
+        rel_paths = discover_feature_sets(
+            args.feature_root,
+            encoders,
+            cached_token_root,
+            limit=args.limit_zips,
+        )
     if not rel_paths:
         raise RuntimeError(f"no complete teacher feature sets under {args.feature_root}")
     log(f"Found {len(rel_paths)} complete zip feature set(s)")
@@ -1425,6 +1445,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--limit-zips", type=int, help="Limit zip feature sets for smoke tests.")
+    parser.add_argument(
+        "--feature-manifest",
+        type=Path,
+        help="Text file with one complete feature-set relative path per line. Skips feature-tree discovery.",
+    )
     parser.add_argument(
         "--sample-rate-denominator",
         type=int,
