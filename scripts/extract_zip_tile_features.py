@@ -16,6 +16,7 @@ Outputs are written one `.pt` file per input zip and encoder.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import math
 import os
@@ -30,6 +31,29 @@ from typing import Any, Sequence
 
 
 SUPPORTED_ENCODERS = ("virchow2", "hoptimus1", "uni_v2")
+
+
+@dataclass(frozen=True)
+class TileSampler:
+    denominator: int = 1
+    offset: int = 0
+
+    @property
+    def enabled(self) -> bool:
+        return self.denominator > 1
+
+    def keep(self, rel_path: Path, tile_name: str) -> bool:
+        if not self.enabled:
+            return True
+        key = f"{rel_path.as_posix()}\0{tile_name}".encode("utf-8")
+        digest = hashlib.blake2b(key, digest_size=8).digest()
+        value = int.from_bytes(digest, byteorder="big", signed=False)
+        return value % self.denominator == self.offset
+
+    def describe(self) -> str:
+        if not self.enabled:
+            return "full dataset"
+        return f"deterministic tile sample offset={self.offset}/{self.denominator}"
 
 
 @dataclass(frozen=True)
@@ -301,6 +325,7 @@ def extract_zip_features(
     overwrite: bool,
     fail_fast: bool,
     log_every_batches: int,
+    tile_sampler: TileSampler,
 ) -> bool:
     import torch
 
@@ -314,7 +339,17 @@ def extract_zip_features(
     members = zip_image_members(zip_path)
     if limit_tiles is not None:
         members = members[:limit_tiles]
-    log(f"[zip-members] {spec.name}: {zip_path} has {len(members)} image tile(s)")
+    original_member_count = len(members)
+    if tile_sampler.enabled:
+        rel_path = zip_path.relative_to(input_root).with_suffix(".pt")
+        members = [member for member in members if tile_sampler.keep(rel_path, member)]
+    log(
+        f"[zip-members] {spec.name}: {zip_path} has {len(members)} selected image tile(s)"
+        + (f" from {original_member_count}" if tile_sampler.enabled else "")
+    )
+    if not members:
+        log(f"[skip-empty-sample] {spec.name}: {zip_path} has no selected tiles")
+        return False
 
     tile_names: list[str] = []
     embeddings_out: list[Any] = []
@@ -434,6 +469,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=positive_int, default=64)
     parser.add_argument("--limit-zips", type=positive_int, help="Process only the first N zip files.")
     parser.add_argument("--limit-tiles", type=positive_int, help="Process only the first N tiles per zip.")
+    parser.add_argument(
+        "--sample-rate-denominator",
+        type=positive_int,
+        default=1,
+        help="Deterministically keep roughly 1/N tiles across the dataset. Use 1000 for a 1/1000 sample.",
+    )
+    parser.add_argument(
+        "--sample-rate-offset",
+        type=non_negative_int,
+        default=0,
+        help="Hash bucket offset used with --sample-rate-denominator for reproducible non-overlapping folds.",
+    )
     parser.add_argument("--device", default="auto", help="auto, cuda, cuda:0, mps, or cpu.")
     parser.add_argument("--amp-dtype", choices=("fp16", "bf16", "off"), default="fp16")
     parser.add_argument("--save-dtype", choices=("float16", "bfloat16", "float32"), default="float16")
@@ -474,6 +521,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.token_maps_only:
         args.include_token_maps = True
+    if args.sample_rate_offset >= args.sample_rate_denominator:
+        raise ValueError("--sample-rate-offset must be in [0, --sample-rate-denominator)")
+    tile_sampler = TileSampler(
+        denominator=args.sample_rate_denominator,
+        offset=args.sample_rate_offset,
+    )
 
     if args.hf_cache_dir:
         os.environ["HF_HOME"] = str(args.hf_cache_dir)
@@ -496,6 +549,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     log(f"Output root: {output_root}")
     log(f"HF_HOME: {os.environ.get('HF_HOME', '<default>')}")
     log(f"Found {len(zip_files)} zip file(s).")
+    log(f"Tile sampling: {tile_sampler.describe()}")
 
     for encoder_name in args.encoders:
         spec = ENCODER_SPECS[encoder_name]
@@ -521,6 +575,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 overwrite=args.overwrite,
                 fail_fast=args.fail_fast,
                 log_every_batches=args.log_every_batches,
+                tile_sampler=tile_sampler,
             )
         del model
         try:

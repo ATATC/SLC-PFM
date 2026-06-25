@@ -28,6 +28,8 @@ ENCODERS="${ENCODERS:-virchow2,hoptimus1,uni_v2}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
 LIMIT_ZIPS="${LIMIT_ZIPS:-}"
 LIMIT_TILES="${LIMIT_TILES:-}"
+SAMPLE_RATE_DENOMINATOR="${SAMPLE_RATE_DENOMINATOR:-}"
+SAMPLE_RATE_OFFSET="${SAMPLE_RATE_OFFSET:-0}"
 INCLUDE_TOKEN_MAPS="${INCLUDE_TOKEN_MAPS:-0}"
 TOKEN_MAPS_ONLY="${TOKEN_MAPS_ONLY:-0}"
 LOG_EVERY_BATCHES="${LOG_EVERY_BATCHES:-3072}"
@@ -113,6 +115,11 @@ fi
 
 if [[ -n "${LIMIT_TILES}" ]]; then
   cmd+=(--limit-tiles "${LIMIT_TILES}")
+fi
+
+if [[ -n "${SAMPLE_RATE_DENOMINATOR}" ]]; then
+  cmd+=(--sample-rate-denominator "${SAMPLE_RATE_DENOMINATOR}")
+  cmd+=(--sample-rate-offset "${SAMPLE_RATE_OFFSET}")
 fi
 
 if [[ "${INCLUDE_TOKEN_MAPS}" != "0" || "${TOKEN_MAPS_ONLY}" != "0" ]]; then

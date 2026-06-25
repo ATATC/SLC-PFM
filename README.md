@@ -225,6 +225,25 @@ The run id defaults to the output directory name, so chained jobs append to the 
 `WANDB_RUN_ID` if you want different values. Use `WANDB_MODE=offline` for local/offline logging, or `WANDB_MODE=disabled`
 to turn WandB off even when `WANDB_API_KEY` is set.
 
+To fill only the missing summary features needed for the 1/1000 sampled distillation subset, extract `hoptimus1` and
+`uni_v2` with the same sampler used during training:
+
+```bash
+cd /scratch/atatc/app/SLC-PFM
+
+N=$(find /project/rrg-jma/shared/SLC-PFM -mindepth 1 -maxdepth 1 -type d -name 'chunk_*' | wc -l)
+
+sbatch \
+  --array=0-$((N-1))%8 \
+  --time=12:00:00 \
+  --export=ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,OUTPUT_ROOT=/project/rrg-jma/shared/SLC-PFM_features,ENCODERS=hoptimus1,uni_v2,BATCH_SIZE=64,SAMPLE_RATE_DENOMINATOR=1000,SAMPLE_RATE_OFFSET=0,LOG_EVERY_BATCHES=512 \
+  slurm/extract_features_fir.sbatch
+```
+
+Zips with no selected tiles are skipped. After extraction, rebuild the manifest with
+`scripts/build_feature_manifest.py`; it should include only zips that have at least one selected tile and all three
+encoder feature files.
+
 If you prefer to spend storage instead of recomputing teacher patch tokens every epoch, you can still extract only dense
 patch-token maps to a separate token-map root:
 
