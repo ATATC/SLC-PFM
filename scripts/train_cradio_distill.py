@@ -456,9 +456,11 @@ class ZipFeatureDistillDataset(IterableDataset):
         self.shuffle_zips = shuffle_zips
         self.tile_sampler = tile_sampler
         self.epoch = epoch
+        self.skip_samples = 0
 
-    def set_epoch(self, epoch: int) -> None:
+    def set_epoch(self, epoch: int, skip_samples: int = 0) -> None:
         self.epoch = epoch
+        self.skip_samples = max(int(skip_samples), 0)
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
         import torch
@@ -473,6 +475,11 @@ class ZipFeatureDistillDataset(IterableDataset):
 
         if worker_info is not None:
             rel_paths = rel_paths[worker_info.id :: worker_info.num_workers]
+            skip_remaining = self.skip_samples // worker_info.num_workers
+            if worker_info.id < self.skip_samples % worker_info.num_workers:
+                skip_remaining += 1
+        else:
+            skip_remaining = self.skip_samples
 
         for rel_path in rel_paths:
             zip_path = (self.input_root / rel_path).with_suffix(".zip")
@@ -543,6 +550,12 @@ class ZipFeatureDistillDataset(IterableDataset):
                         ]
                     if not tile_names:
                         continue
+                    if skip_remaining:
+                        if skip_remaining >= len(tile_names):
+                            skip_remaining -= len(tile_names)
+                            continue
+                        tile_names = tile_names[skip_remaining:]
+                        skip_remaining = 0
 
                     for tile_name in tile_names:
                         try:
@@ -1261,17 +1274,18 @@ def train(args: argparse.Namespace) -> None:
         if stop_reason() is not None:
             break
 
-        dataset.set_epoch(epoch)
-        epoch_started_at = time.monotonic()
         resume_epoch_step = start_epoch_step if epoch == start_epoch else 0
+        dataset.set_epoch(epoch, skip_samples=resume_epoch_step * args.batch_size)
+        epoch_started_at = time.monotonic()
         epoch_step_base = step - resume_epoch_step
         log(f"Starting epoch {epoch + 1}" + (f"/{target_epochs}" if target_epochs is not None else ""))
         if resume_epoch_step:
-            log(f"Skipping {resume_epoch_step} already-trained batch(es) in epoch {epoch + 1}")
+            log(
+                f"Skipping {resume_epoch_step} already-trained batch(es) "
+                f"({resume_epoch_step * args.batch_size} sample slots) in epoch {epoch + 1}"
+            )
         produced_batch_count = 0
         for batch_index, batch in enumerate(loader):
-            if batch_index < resume_epoch_step:
-                continue
             if stop_reason() is not None:
                 break
             produced_batch_count += 1
