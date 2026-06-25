@@ -200,6 +200,15 @@ def load_feature_manifest(path: Path, limit: int | None = None) -> list[Path]:
     return rel_paths
 
 
+def discover_zip_sets(input_root: Path, limit: int | None = None) -> list[Path]:
+    rel_paths: list[Path] = []
+    for zip_path in sorted(input_root.rglob("*.zip"), key=lambda path: natural_key(str(path.relative_to(input_root)))):
+        rel_paths.append(zip_path.relative_to(input_root).with_suffix(".pt"))
+        if limit is not None and len(rel_paths) >= limit:
+            break
+    return rel_paths
+
+
 def sampled_tile_indices(tile_sampler: TileSampler, rel_path: Path, tile_names: Sequence[str]) -> list[int]:
     if not tile_sampler.enabled:
         return list(range(len(tile_names)))
@@ -270,13 +279,13 @@ def split_square_patch_tokens(output: Any, preferred_prefix_tokens: int, teacher
     return output[:, prefix_tokens:, :].float(), prefix_tokens, (side, side)
 
 
-def extract_online_patch_tokens(
+def extract_online_teacher_targets(
     teacher: OnlineTeacher,
     images: Any,
     *,
     device: str,
     amp_dtype: str,
-) -> Any:
+) -> tuple[Any, Any]:
     with inference_context(device, amp_dtype):
         teacher_images = normalize_for_teacher(images, teacher)
         if hasattr(teacher.model, "forward_features"):
@@ -285,6 +294,23 @@ def extract_online_patch_tokens(
             output = tensor_from_model_output(teacher.model(teacher_images))
 
     patch_tokens, _, _ = split_square_patch_tokens(output, teacher.prefix_tokens, teacher.name)
+    summary = output[:, 0, :].float()
+    return summary, patch_tokens
+
+
+def extract_online_patch_tokens(
+    teacher: OnlineTeacher,
+    images: Any,
+    *,
+    device: str,
+    amp_dtype: str,
+) -> Any:
+    _, patch_tokens = extract_online_teacher_targets(
+        teacher,
+        images,
+        device=device,
+        amp_dtype=amp_dtype,
+    )
     return patch_tokens
 
 
@@ -411,6 +437,7 @@ class ZipFeatureDistillDataset(IterableDataset):
         rel_paths: Sequence[Path],
         encoders: Sequence[str],
         tile_size: int,
+        require_summary_features: bool,
         require_token_maps: bool,
         seed: int,
         shuffle_zips: bool,
@@ -423,6 +450,7 @@ class ZipFeatureDistillDataset(IterableDataset):
         self.rel_paths = list(rel_paths)
         self.encoders = list(encoders)
         self.transform = build_transform(tile_size)
+        self.require_summary_features = require_summary_features
         self.require_token_maps = require_token_maps
         self.seed = seed
         self.shuffle_zips = shuffle_zips
@@ -457,52 +485,65 @@ class ZipFeatureDistillDataset(IterableDataset):
             token_name_to_index: dict[str, dict[str, int]] = {}
             teacher_features: dict[str, Any] = {}
             teacher_token_maps: dict[str, Any] = {}
-            for encoder in self.encoders:
-                feature_path = self.feature_root / encoder / rel_path
-                names, features, token_maps = load_feature_tensors(
-                    feature_path,
-                    require_features=True,
-                    require_token_maps=self.require_token_maps and self.token_feature_root is None,
-                )
-                teacher_names[encoder] = names
-                summary_name_to_index[encoder] = {name: index for index, name in enumerate(names)}
-                assert features is not None
-                teacher_features[encoder] = features
-                if self.require_token_maps and self.token_feature_root is not None:
-                    token_path = self.token_feature_root / encoder / rel_path
-                    token_names, _, token_maps = load_feature_tensors(
-                        token_path,
-                        require_features=False,
-                        require_token_maps=True,
-                    )
-                    if token_names != names:
-                        print(
-                            f"[warn] tile order differs for {feature_path} and {token_path}; aligning by tile name",
-                            file=sys.stderr,
-                            flush=True,
-                        )
-                    teacher_names[encoder] = sorted(set(names) & set(token_names), key=natural_key)
-                    token_name_to_index[encoder] = {name: index for index, name in enumerate(token_names)}
-                else:
-                    token_name_to_index[encoder] = summary_name_to_index[encoder]
-                if token_maps is not None:
-                    teacher_token_maps[encoder] = token_maps
-
-            common_tiles = set(teacher_names[self.encoders[0]])
-            for encoder in self.encoders[1:]:
-                common_tiles &= set(teacher_names[encoder])
-            tile_names = sorted(common_tiles, key=natural_key)
-            if self.tile_sampler.enabled:
-                tile_names = [
-                    tile_name
-                    for tile_name in tile_names
-                    if self.tile_sampler.keep(rel_path, tile_name)
-                ]
-            if not tile_names:
-                continue
 
             try:
                 with zipfile.ZipFile(zip_path) as archive:
+                    if self.require_summary_features or self.require_token_maps:
+                        for encoder in self.encoders:
+                            feature_path = self.feature_root / encoder / rel_path
+                            names, features, token_maps = load_feature_tensors(
+                                feature_path,
+                                require_features=self.require_summary_features,
+                                require_token_maps=self.require_token_maps and self.token_feature_root is None,
+                            )
+                            teacher_names[encoder] = names
+                            summary_name_to_index[encoder] = {name: index for index, name in enumerate(names)}
+                            if features is not None:
+                                teacher_features[encoder] = features
+                            if self.require_token_maps and self.token_feature_root is not None:
+                                token_path = self.token_feature_root / encoder / rel_path
+                                token_names, _, token_maps = load_feature_tensors(
+                                    token_path,
+                                    require_features=False,
+                                    require_token_maps=True,
+                                )
+                                if token_names != names:
+                                    print(
+                                        f"[warn] tile order differs for {feature_path} and {token_path}; aligning by tile name",
+                                        file=sys.stderr,
+                                        flush=True,
+                                    )
+                                teacher_names[encoder] = sorted(set(names) & set(token_names), key=natural_key)
+                                token_name_to_index[encoder] = {name: index for index, name in enumerate(token_names)}
+                            else:
+                                token_name_to_index[encoder] = summary_name_to_index[encoder]
+                            if token_maps is not None:
+                                teacher_token_maps[encoder] = token_maps
+
+                        common_tiles = set(teacher_names[self.encoders[0]])
+                        for encoder in self.encoders[1:]:
+                            common_tiles &= set(teacher_names[encoder])
+                        tile_names = sorted(common_tiles, key=natural_key)
+                    else:
+                        tile_names = sorted(
+                            [
+                                info.filename
+                                for info in archive.infolist()
+                                if not info.is_dir()
+                                and info.filename.lower().endswith((".webp", ".png", ".jpg", ".jpeg"))
+                            ],
+                            key=natural_key,
+                        )
+
+                    if self.tile_sampler.enabled:
+                        tile_names = [
+                            tile_name
+                            for tile_name in tile_names
+                            if self.tile_sampler.keep(rel_path, tile_name)
+                        ]
+                    if not tile_names:
+                        continue
+
                     for tile_name in tile_names:
                         try:
                             image = self.transform(image_from_zip(archive, tile_name))
@@ -513,6 +554,7 @@ class ZipFeatureDistillDataset(IterableDataset):
                         targets = {
                             encoder: teacher_features[encoder][summary_name_to_index[encoder][tile_name]]
                             for encoder in self.encoders
+                            if encoder in teacher_features
                         }
                         token_targets = {
                             encoder: teacher_token_maps[encoder][token_name_to_index[encoder][tile_name]]
@@ -1037,9 +1079,13 @@ def train(args: argparse.Namespace) -> None:
     token_feature_root = args.token_feature_root or args.feature_root
     cached_token_root = token_feature_root if args.include_token_maps and not args.online_token_teachers else None
     need_cached_spatial_stats = args.include_token_maps and not args.online_token_teachers
+    need_online_teachers = args.online_summary_teachers or args.online_token_teachers
     if args.feature_manifest is not None:
         rel_paths = load_feature_manifest(args.feature_manifest, limit=args.limit_zips)
-        log(f"Loaded {len(rel_paths)} complete zip feature set(s) from manifest {args.feature_manifest}")
+        log(f"Loaded {len(rel_paths)} zip set(s) from manifest {args.feature_manifest}")
+    elif args.online_summary_teachers and not need_cached_spatial_stats:
+        rel_paths = discover_zip_sets(args.input_root, limit=args.limit_zips)
+        log(f"Discovered {len(rel_paths)} source zip set(s) under {args.input_root}")
     else:
         rel_paths = discover_feature_sets(
             args.feature_root,
@@ -1053,7 +1099,10 @@ def train(args: argparse.Namespace) -> None:
     log(f"Dataset sampling: {tile_sampler.describe()}")
 
     stats_path = args.stats_path or (output_dir / "teacher_stats.pt")
-    if stats_path.exists() and not args.recompute_stats:
+    if args.online_summary_teachers and not need_cached_spatial_stats:
+        log("Online summary teachers enabled; skipping cached summary teacher stats")
+        stats = DistillStats(summary={}, spatial={})
+    elif stats_path.exists() and not args.recompute_stats:
         metadata = load_stats_sample_metadata(stats_path)
         if metadata is None:
             metadata = {"sample_rate_denominator": 1, "sample_rate_offset": 0}
@@ -1085,10 +1134,9 @@ def train(args: argparse.Namespace) -> None:
         save_stats(stats, stats_path, tile_sampler)
         log(f"Saved teacher stats to {stats_path}")
 
-    teacher_dims = {encoder: stats.summary[encoder].dim for encoder in encoders}
     online_teachers = {}
-    if args.online_token_teachers:
-        log("Loading frozen online patch-token teachers")
+    if need_online_teachers:
+        log("Loading frozen online teachers")
         online_teachers = {
             encoder: load_online_teacher(
                 encoder,
@@ -1098,6 +1146,11 @@ def train(args: argparse.Namespace) -> None:
             )
             for encoder in encoders
         }
+    teacher_dims = (
+        {encoder: teacher.token_dim for encoder, teacher in online_teachers.items()}
+        if args.online_summary_teachers
+        else {encoder: stats.summary[encoder].dim for encoder in encoders}
+    )
     token_dims = (
         {encoder: teacher.token_dim for encoder, teacher in online_teachers.items()}
         if args.online_token_teachers
@@ -1122,6 +1175,7 @@ def train(args: argparse.Namespace) -> None:
         rel_paths=rel_paths,
         encoders=encoders,
         tile_size=args.tile_size,
+        require_summary_features=not args.online_summary_teachers,
         require_token_maps=need_cached_spatial_stats,
         seed=args.seed,
         shuffle_zips=not args.no_shuffle_zips,
@@ -1235,20 +1289,38 @@ def train(args: argparse.Namespace) -> None:
             optimizer.zero_grad(set_to_none=True)
             with autocast_context(device, args.amp_dtype):
                 outputs = model(images)
-                losses = {
-                    encoder: balanced_summary_loss(outputs["summary"][encoder], teachers[encoder], stats.summary[encoder])
-                    for encoder in encoders
-                }
+                online_summary_targets = {}
+                online_patch_targets = {}
+                if need_online_teachers:
+                    for encoder, teacher in online_teachers.items():
+                        target_summary, target_tokens = extract_online_teacher_targets(
+                            teacher,
+                            images,
+                            device=device,
+                            amp_dtype=args.amp_dtype,
+                        )
+                        if args.online_summary_teachers:
+                            online_summary_targets[encoder] = target_summary
+                        if args.include_token_maps and args.online_token_teachers:
+                            online_patch_targets[encoder] = target_tokens
+
+                losses = {}
+                for encoder in encoders:
+                    if args.online_summary_teachers:
+                        losses[encoder] = batch_balanced_loss(
+                            outputs["summary"][encoder],
+                            online_summary_targets[encoder],
+                        )
+                    else:
+                        losses[encoder] = balanced_summary_loss(
+                            outputs["summary"][encoder],
+                            teachers[encoder],
+                            stats.summary[encoder],
+                        )
                 spatial_losses = {}
                 if args.include_token_maps:
                     if args.online_token_teachers:
-                        for encoder, teacher in online_teachers.items():
-                            target_tokens = extract_online_patch_tokens(
-                                teacher,
-                                images,
-                                device=device,
-                                amp_dtype=args.amp_dtype,
-                            )
+                        for encoder, target_tokens in online_patch_targets.items():
                             pred_tokens = resize_spatial_prediction(outputs["spatial"][encoder], target_tokens)
                             spatial_losses[encoder] = batch_balanced_loss(
                                 pred_tokens.reshape(-1, pred_tokens.shape[-1]),
@@ -1484,6 +1556,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Train dense spatial losses by running frozen teacher encoders on the fly instead of loading token_maps.",
     )
+    parser.add_argument(
+        "--online-summary-teachers",
+        action="store_true",
+        help="Train summary losses by running frozen teacher encoders on the fly instead of loading saved summaries.",
+    )
     parser.add_argument("--spatial-loss-weight", type=float, default=1.0)
     parser.add_argument("--no-shuffle-zips", action="store_true")
     parser.add_argument("--log-every", type=int, default=20)
@@ -1507,6 +1584,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.online_token_teachers:
         args.include_token_maps = True
+    if args.online_summary_teachers and args.stats_max_files is not None:
+        log("Ignoring --stats-max-files because --online-summary-teachers does not compute saved-summary stats")
     random.seed(args.seed)
 
     train(args)

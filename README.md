@@ -193,14 +193,13 @@ one Slurm submission performs before checkpointing and exiting; the next job res
 ```bash
 cd /scratch/atatc/app/SLC-PFM
 
-manifest=/project/rrg-jma/shared/SLC-PFM_distill/manifests/slc_pfm_complete_features_virchow2_hoptimus1_uni_v2.txt
+manifest=/project/rrg-jma/shared/SLC-PFM_distill/manifests/slc_pfm_source_zips.txt
 
-python scripts/build_feature_manifest.py \
-  --feature-root /project/rrg-jma/shared/SLC-PFM_features \
-  --encoders virchow2,hoptimus1,uni_v2 \
+python scripts/build_zip_manifest.py \
+  --input-root /project/rrg-jma/shared/SLC-PFM \
   --output "$manifest"
 
-base_export="ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,FEATURE_MANIFEST=$manifest,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_patch_sample_1of1000_3epochs_manifest_20260625,ONLINE_TOKEN_TEACHERS=1,SAMPLE_RATE_DENOMINATOR=1000,SAMPLE_RATE_OFFSET=0,BATCH_SIZE=4,EPOCHS=3,ESTIMATE_TOTAL_STEPS=176097,MAX_RUN_STEPS=10000,SAVE_EVERY=1000,WANDB_NAME=cradio_v4_so400m_sample_1of1000_manifest_20260625,WANDB_TAGS=cradio"
+base_export="ALL,CODE_DIR=/scratch/atatc/app/SLC-PFM,INPUT_ROOT=/project/rrg-jma/shared/SLC-PFM,FEATURE_ROOT=/project/rrg-jma/shared/SLC-PFM_features,FEATURE_MANIFEST=$manifest,OUTPUT_DIR=/project/rrg-jma/shared/SLC-PFM_distill/cradio_v4_so400m_online_all_teachers_sample_1of1000_3epochs_20260625,ONLINE_SUMMARY_TEACHERS=1,ONLINE_TOKEN_TEACHERS=1,SAMPLE_RATE_DENOMINATOR=1000,SAMPLE_RATE_OFFSET=0,BATCH_SIZE=4,EPOCHS=3,ESTIMATE_TOTAL_STEPS=176097,MAX_RUN_STEPS=10000,SAVE_EVERY=1000,NUM_WORKERS=2,WANDB_NAME=cradio_v4_so400m_online_all_teachers_sample_1of1000,WANDB_TAGS=cradio"
 
 dep=""
 for i in $(seq 1 18); do

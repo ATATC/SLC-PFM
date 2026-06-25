@@ -34,6 +34,7 @@ RADIO_SOURCE="${RADIO_SOURCE:-github}"
 RADIO_FORCE_RELOAD="${RADIO_FORCE_RELOAD:-0}"
 VITDET_WINDOW_SIZE="${VITDET_WINDOW_SIZE:-}"
 ONLINE_TOKEN_TEACHERS="${ONLINE_TOKEN_TEACHERS:-0}"
+ONLINE_SUMMARY_TEACHERS="${ONLINE_SUMMARY_TEACHERS:-0}"
 BATCH_SIZE="${BATCH_SIZE:-}"
 if [[ -z "${BATCH_SIZE}" ]]; then
   if [[ "${ONLINE_TOKEN_TEACHERS}" != "0" ]]; then
@@ -197,6 +198,10 @@ fi
 
 if [[ "${ONLINE_TOKEN_TEACHERS}" != "0" ]]; then
   cmd+=(--online-token-teachers)
+fi
+
+if [[ "${ONLINE_SUMMARY_TEACHERS}" != "0" ]]; then
+  cmd+=(--online-summary-teachers)
 fi
 
 if [[ -n "${WANDB_PROJECT}" ]]; then
