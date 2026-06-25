@@ -857,6 +857,18 @@ def init_wandb(args: argparse.Namespace, config: dict[str, Any], output_dir: Pat
     return run
 
 
+def json_safe_config(config: dict[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key, value in config.items():
+        if isinstance(value, Path):
+            safe[key] = str(value)
+        elif isinstance(value, (list, tuple)):
+            safe[key] = [str(item) if isinstance(item, Path) else item for item in value]
+        else:
+            safe[key] = value
+    return safe
+
+
 def latest_checkpoint_path(output_dir: Path) -> Path | None:
     latest = output_dir / "checkpoint_latest.pt"
     if latest.exists():
@@ -1134,6 +1146,7 @@ def train(args: argparse.Namespace) -> None:
     config["token_feature_root"] = str(token_feature_root) if need_cached_spatial_stats else None
     config["output_dir"] = str(output_dir)
     config["stats_path"] = str(stats_path)
+    config = json_safe_config(config)
     config_path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
     wandb_run = init_wandb(args, config, output_dir)
 
