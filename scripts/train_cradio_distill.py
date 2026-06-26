@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
+import itertools
 import json
 import math
 import os
@@ -36,6 +37,7 @@ from torch.utils.data import IterableDataset
 
 
 DEFAULT_ENCODERS = ("virchow2", "hoptimus1", "uni_v2")
+TileRecord = tuple[Path, str]
 
 
 @dataclass(frozen=True)
@@ -197,6 +199,45 @@ def load_feature_manifest(path: Path, limit: int | None = None) -> list[Path]:
             rel_paths.append(rel_path)
             if limit is not None and len(rel_paths) >= limit:
                 break
+    return rel_paths
+
+
+def load_tile_manifest(path: Path, limit_zips: int | None = None) -> list[TileRecord]:
+    records: list[TileRecord] = []
+    allowed_rel_paths: set[Path] | None = None
+    if limit_zips is not None:
+        allowed_rel_paths = set()
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, raw_line in enumerate(handle, start=1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                rel_raw, tile_name = line.split("\t", 1)
+            except ValueError as exc:
+                raise ValueError(
+                    f"invalid tile manifest row {path}:{line_number}; expected '<relative .pt path>\\t<tile name>'"
+                ) from exc
+            rel_path = Path(rel_raw)
+            if rel_path.is_absolute() or ".." in rel_path.parts:
+                raise ValueError(f"invalid relative path in manifest {path}:{line_number}: {rel_raw}")
+            if allowed_rel_paths is not None:
+                if rel_path not in allowed_rel_paths:
+                    if len(allowed_rel_paths) >= limit_zips:
+                        continue
+                    allowed_rel_paths.add(rel_path)
+            records.append((rel_path, tile_name))
+    return records
+
+
+def unique_rel_paths_from_tile_records(records: Sequence[TileRecord]) -> list[Path]:
+    rel_paths: list[Path] = []
+    seen: set[Path] = set()
+    for rel_path, _ in records:
+        if rel_path in seen:
+            continue
+        seen.add(rel_path)
+        rel_paths.append(rel_path)
     return rel_paths
 
 
@@ -442,6 +483,7 @@ class ZipFeatureDistillDataset(IterableDataset):
         seed: int,
         shuffle_zips: bool,
         tile_sampler: TileSampler,
+        tile_records: Sequence[TileRecord] | None = None,
         epoch: int = 0,
     ) -> None:
         self.input_root = input_root
@@ -455,6 +497,7 @@ class ZipFeatureDistillDataset(IterableDataset):
         self.seed = seed
         self.shuffle_zips = shuffle_zips
         self.tile_sampler = tile_sampler
+        self.tile_records = list(tile_records) if tile_records is not None else None
         self.epoch = epoch
         self.skip_samples = 0
 
@@ -462,11 +505,137 @@ class ZipFeatureDistillDataset(IterableDataset):
         self.epoch = epoch
         self.skip_samples = max(int(skip_samples), 0)
 
+    def _ordered_tile_records(self) -> list[TileRecord]:
+        if self.tile_records is None:
+            return []
+        records = list(self.tile_records)
+        if self.shuffle_zips:
+            grouped_records = [
+                list(group)
+                for _, group in itertools.groupby(records, key=lambda record: record[0])
+            ]
+            rng = random.Random(self.seed + self.epoch)
+            rng.shuffle(grouped_records)
+            records = [record for group in grouped_records for record in group]
+        if self.skip_samples:
+            records = records[self.skip_samples :]
+        return records
+
+    def _yield_zip_samples(
+        self,
+        rel_path: Path,
+        tile_names_override: Sequence[str] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        zip_path = (self.input_root / rel_path).with_suffix(".zip")
+        if not zip_path.exists():
+            print(f"[warn] missing source zip: {zip_path}", file=sys.stderr, flush=True)
+            return
+
+        teacher_names: dict[str, list[str]] = {}
+        summary_name_to_index: dict[str, dict[str, int]] = {}
+        token_name_to_index: dict[str, dict[str, int]] = {}
+        teacher_features: dict[str, Any] = {}
+        teacher_token_maps: dict[str, Any] = {}
+
+        try:
+            with zipfile.ZipFile(zip_path) as archive:
+                if self.require_summary_features or self.require_token_maps:
+                    for encoder in self.encoders:
+                        feature_path = self.feature_root / encoder / rel_path
+                        names, features, token_maps = load_feature_tensors(
+                            feature_path,
+                            require_features=self.require_summary_features,
+                            require_token_maps=self.require_token_maps and self.token_feature_root is None,
+                        )
+                        teacher_names[encoder] = names
+                        summary_name_to_index[encoder] = {name: index for index, name in enumerate(names)}
+                        if features is not None:
+                            teacher_features[encoder] = features
+                        if self.require_token_maps and self.token_feature_root is not None:
+                            token_path = self.token_feature_root / encoder / rel_path
+                            token_names, _, token_maps = load_feature_tensors(
+                                token_path,
+                                require_features=False,
+                                require_token_maps=True,
+                            )
+                            if token_names != names:
+                                print(
+                                    f"[warn] tile order differs for {feature_path} and {token_path}; aligning by tile name",
+                                    file=sys.stderr,
+                                    flush=True,
+                                )
+                            teacher_names[encoder] = sorted(set(names) & set(token_names), key=natural_key)
+                            token_name_to_index[encoder] = {name: index for index, name in enumerate(token_names)}
+                        else:
+                            token_name_to_index[encoder] = summary_name_to_index[encoder]
+                        if token_maps is not None:
+                            teacher_token_maps[encoder] = token_maps
+
+                    common_tiles = set(teacher_names[self.encoders[0]])
+                    for encoder in self.encoders[1:]:
+                        common_tiles &= set(teacher_names[encoder])
+                    tile_names = sorted(common_tiles, key=natural_key)
+                elif tile_names_override is not None:
+                    tile_names = list(tile_names_override)
+                else:
+                    tile_names = sorted(
+                        [
+                            info.filename
+                            for info in archive.infolist()
+                            if not info.is_dir()
+                            and info.filename.lower().endswith((".webp", ".png", ".jpg", ".jpeg"))
+                        ],
+                        key=natural_key,
+                    )
+
+                if tile_names_override is not None:
+                    requested = set(tile_names_override)
+                    tile_names = [tile_name for tile_name in tile_names if tile_name in requested]
+                elif self.tile_sampler.enabled:
+                    tile_names = [
+                        tile_name
+                        for tile_name in tile_names
+                        if self.tile_sampler.keep(rel_path, tile_name)
+                    ]
+                if not tile_names:
+                    return
+
+                for tile_name in tile_names:
+                    try:
+                        image = self.transform(image_from_zip(archive, tile_name))
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[warn] failed image {zip_path}!{tile_name}: {exc}", file=sys.stderr, flush=True)
+                        continue
+
+                    targets = {
+                        encoder: teacher_features[encoder][summary_name_to_index[encoder][tile_name]]
+                        for encoder in self.encoders
+                        if encoder in teacher_features
+                    }
+                    token_targets = {
+                        encoder: teacher_token_maps[encoder][token_name_to_index[encoder][tile_name]]
+                        for encoder in self.encoders
+                        if encoder in teacher_token_maps
+                    }
+                    yield {"image": image, "teachers": targets, "teacher_tokens": token_targets}
+        except zipfile.BadZipFile as exc:
+            print(f"[warn] bad zip {zip_path}: {exc}", file=sys.stderr, flush=True)
+
     def __iter__(self) -> Iterator[dict[str, Any]]:
         import torch
         from torch.utils.data import get_worker_info
 
         worker_info = get_worker_info()
+
+        if self.tile_records is not None:
+            records = self._ordered_tile_records()
+            if worker_info is not None:
+                records = records[worker_info.id :: worker_info.num_workers]
+            for rel_path, group in itertools.groupby(records, key=lambda record: record[0]):
+                tile_names = [tile_name for _, tile_name in group]
+                yield from self._yield_zip_samples(rel_path, tile_names_override=tile_names)
+            return
+
         rel_paths = list(self.rel_paths)
         epoch_seed = self.seed + self.epoch
         if self.shuffle_zips:
@@ -1093,7 +1262,15 @@ def train(args: argparse.Namespace) -> None:
     cached_token_root = token_feature_root if args.include_token_maps and not args.online_token_teachers else None
     need_cached_spatial_stats = args.include_token_maps and not args.online_token_teachers
     need_online_teachers = args.online_summary_teachers or args.online_token_teachers
-    if args.feature_manifest is not None:
+    tile_records: list[TileRecord] | None = None
+    if args.tile_manifest is not None:
+        tile_records = load_tile_manifest(args.tile_manifest, limit_zips=args.limit_zips)
+        rel_paths = unique_rel_paths_from_tile_records(tile_records)
+        log(
+            f"Loaded {len(tile_records)} tile record(s) across {len(rel_paths)} zip set(s) "
+            f"from tile manifest {args.tile_manifest}"
+        )
+    elif args.feature_manifest is not None:
         rel_paths = load_feature_manifest(args.feature_manifest, limit=args.limit_zips)
         log(f"Loaded {len(rel_paths)} zip set(s) from manifest {args.feature_manifest}")
     elif args.online_summary_teachers and not need_cached_spatial_stats:
@@ -1193,6 +1370,7 @@ def train(args: argparse.Namespace) -> None:
         seed=args.seed,
         shuffle_zips=not args.no_shuffle_zips,
         tile_sampler=tile_sampler,
+        tile_records=tile_records,
     )
     loader = DataLoader(
         dataset,
@@ -1211,6 +1389,7 @@ def train(args: argparse.Namespace) -> None:
     config["input_root"] = str(args.input_root)
     config["feature_root"] = str(args.feature_root)
     config["token_feature_root"] = str(token_feature_root) if need_cached_spatial_stats else None
+    config["tile_manifest"] = str(args.tile_manifest) if args.tile_manifest is not None else None
     config["output_dir"] = str(output_dir)
     config["stats_path"] = str(stats_path)
     config = json_safe_config(config)
@@ -1548,6 +1727,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--feature-manifest",
         type=Path,
         help="Text file with one complete feature-set relative path per line. Skips feature-tree discovery.",
+    )
+    parser.add_argument(
+        "--tile-manifest",
+        type=Path,
+        help=(
+            "Text file with '<relative .pt path>\\t<tile name>' rows. "
+            "Use this for sampled resumable online-teacher training."
+        ),
     )
     parser.add_argument(
         "--sample-rate-denominator",
