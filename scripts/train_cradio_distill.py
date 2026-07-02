@@ -754,6 +754,7 @@ def build_student(
     radio_repo: str,
     radio_source: str,
     radio_force_reload: bool,
+    radio_random_init: bool,
     vitdet_window_size: int | None,
     summary_dims: dict[str, int],
     token_dims: dict[str, int],
@@ -780,6 +781,17 @@ def build_student(
                 handle.write(f"{trusted_name}\n")
             log(f"Added TorchHub trusted repo entry {trusted_name} in {trusted_list}")
 
+    def reset_module_parameters(module: nn.Module) -> None:
+        reset_parameters = getattr(module, "reset_parameters", None)
+        if callable(reset_parameters):
+            reset_parameters()
+            return
+        for parameter in module.parameters(recurse=False):
+            if parameter.ndim > 1:
+                nn.init.trunc_normal_(parameter, std=0.02)
+            else:
+                nn.init.zeros_(parameter)
+
     class Student(nn.Module):
         def __init__(self) -> None:
             super().__init__()
@@ -795,6 +807,9 @@ def build_student(
             if vitdet_window_size is not None:
                 hub_kwargs["vitdet_window_size"] = vitdet_window_size
             self.radio = torch.hub.load(radio_repo, "radio_model", **hub_kwargs)
+            if radio_random_init:
+                log("Randomly reinitializing C-RADIO student weights after loading architecture")
+                self.radio.apply(reset_module_parameters)
             self.radio.float()
             input_conditioner = getattr(self.radio, "input_conditioner", None)
             if input_conditioner is not None and hasattr(input_conditioner, "dtype"):
@@ -1353,6 +1368,7 @@ def train(args: argparse.Namespace) -> None:
         radio_repo=args.radio_repo,
         radio_source=args.radio_source,
         radio_force_reload=args.radio_force_reload,
+        radio_random_init=args.radio_random_init,
         vitdet_window_size=args.vitdet_window_size,
         summary_dims=teacher_dims,
         token_dims=token_dims if args.include_token_maps else {},
@@ -1686,6 +1702,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--radio-repo", default="NVlabs/RADIO", help="TorchHub repo or local RADIO checkout.")
     parser.add_argument("--radio-source", choices=("github", "local"), default="github")
     parser.add_argument("--radio-force-reload", action="store_true")
+    parser.add_argument(
+        "--radio-random-init",
+        action="store_true",
+        help="Use the C-RADIO architecture but reinitialize student weights instead of keeping the official checkpoint.",
+    )
     parser.add_argument("--vitdet-window-size", type=int, help="Optional C-RADIO ViTDet window size.")
     parser.add_argument("--tile-size", type=int, default=224)
     parser.add_argument("--batch-size", type=int, default=512)

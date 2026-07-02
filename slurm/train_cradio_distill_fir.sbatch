@@ -33,6 +33,7 @@ RADIO_VERSION="${RADIO_VERSION:-c-radio_v4-so400m}"
 RADIO_REPO="${RADIO_REPO:-NVlabs/RADIO}"
 RADIO_SOURCE="${RADIO_SOURCE:-github}"
 RADIO_FORCE_RELOAD="${RADIO_FORCE_RELOAD:-0}"
+RADIO_RANDOM_INIT="${RADIO_RANDOM_INIT:-0}"
 VITDET_WINDOW_SIZE="${VITDET_WINDOW_SIZE:-}"
 ONLINE_TOKEN_TEACHERS="${ONLINE_TOKEN_TEACHERS:-0}"
 ONLINE_SUMMARY_TEACHERS="${ONLINE_SUMMARY_TEACHERS:-0}"
@@ -178,6 +179,10 @@ fi
 
 if [[ "${RADIO_FORCE_RELOAD}" != "0" ]]; then
   cmd+=(--radio-force-reload)
+fi
+
+if [[ "${RADIO_RANDOM_INIT}" != "0" ]]; then
+  cmd+=(--radio-random-init)
 fi
 
 if [[ -n "${VITDET_WINDOW_SIZE}" ]]; then
